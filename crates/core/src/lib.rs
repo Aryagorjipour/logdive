@@ -8,7 +8,11 @@
 //! HTTP server binary.
 
 pub mod entry;
+pub mod indexer;
 pub mod parser;
 
 pub use entry::LogEntry;
+pub use indexer::{
+    db_path, init_schema, insert_batch, open, IndexerError, IngestStats, BATCH_SIZE,
+};
 pub use parser::parse_line;
