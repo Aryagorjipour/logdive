@@ -1,0 +1,20 @@
+[package]
+name = "logdive"
+description = "Fast, self-hosted query engine for structured JSON logs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "logdive"
+path = "src/main.rs"
+
+[dependencies]
+logdive-core.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

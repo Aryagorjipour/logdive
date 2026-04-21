@@ -1,0 +1,16 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# SQLite runtime artifacts (logdive writes these)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Editor / OS cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,28 @@
+[package]
+name = "logdive-api"
+description = "Read-only HTTP API server for a logdive index"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "logdive-api"
+path = "src/main.rs"
+
+[dependencies]
+logdive-core.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tower.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tower.workspace = true
