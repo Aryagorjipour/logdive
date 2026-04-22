@@ -10,6 +10,10 @@
 //! constructed against a filesystem path via [`Indexer::open`] or against an
 //! in-memory database via [`Indexer::open_in_memory`] — the latter is used
 //! by the unit tests below and will also serve ad-hoc one-shot scenarios.
+//! For read-only consumers (the HTTP API in milestone 8), [`Indexer::
+//! open_read_only`] opens an existing database without the schema init or
+//! directory-creation side effects of [`Indexer::open`], and enforces
+//! read-only semantics at the SQLite level via `SQLITE_OPEN_READ_ONLY`.
 //!
 //! # Timestamp NOT NULL policy
 //!
@@ -23,7 +27,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OpenFlags};
 
 use crate::entry::LogEntry;
 use crate::error::{LogdiveError, Result};
@@ -132,6 +136,28 @@ impl Indexer {
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         init_schema(&conn)?;
+        Ok(Self { conn })
+    }
+
+    /// Open an existing logdive index at `path` in read-only mode.
+    ///
+    /// Unlike [`Indexer::open`], this method:
+    ///   1. Does **not** create the database file if it is missing (the
+    ///      `SQLITE_OPEN_READ_ONLY` flag fails rather than creates),
+    ///   2. Does **not** create the parent directory,
+    ///   3. Does **not** run schema migrations — the caller is promising
+    ///      that `path` already points at a valid logdive index.
+    ///
+    /// Enforcement of read-only semantics is at the SQLite level: any
+    /// attempted write through the returned connection raises a runtime
+    /// error. This is defense-in-depth for the HTTP API (milestone 8),
+    /// whose surface is exclusively read.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        // `SQLITE_OPEN_URI` is included because it's the safe default
+        // documented by rusqlite; it only affects parsing of `file:...`
+        // URIs, which we never pass in.
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI;
+        let conn = Connection::open_with_flags(path, flags)?;
         Ok(Self { conn })
     }
 
@@ -637,5 +663,90 @@ mod tests {
 
         let stats = idx.stats().unwrap();
         assert_eq!(stats.entries, 1);
+    }
+
+    // -----------------------------------------------------------------
+    // open_read_only()
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn open_read_only_errors_when_file_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist.db");
+        let err = Indexer::open_read_only(&missing).unwrap_err();
+        // SQLite returns "unable to open database file" for missing paths in
+        // read-only mode; surfaced through `LogdiveError::Sqlite`.
+        assert!(matches!(err, LogdiveError::Sqlite(_)));
+    }
+
+    #[test]
+    fn open_read_only_can_read_existing_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ro.db");
+
+        // Populate via the writable opener.
+        {
+            let mut idx = Indexer::open(&db).unwrap();
+            idx.insert_batch(&[make_entry("2026-04-20T10:00:00Z", "info", "visible")])
+                .unwrap();
+        }
+
+        // Re-open read-only and read back.
+        let ro = Indexer::open_read_only(&db).unwrap();
+        let count: i64 = ro
+            .connection()
+            .query_row("SELECT COUNT(*) FROM log_entries", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let stats = ro.stats().unwrap();
+        assert_eq!(stats.entries, 1);
+    }
+
+    #[test]
+    fn open_read_only_rejects_writes_at_sqlite_level() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ro-reject.db");
+
+        // Create and close.
+        {
+            let _ = Indexer::open(&db).unwrap();
+        }
+
+        // Re-open RO and attempt a write via raw SQL — SQLite should block it.
+        let ro = Indexer::open_read_only(&db).unwrap();
+        let result = ro.connection().execute(
+            "INSERT INTO log_entries (timestamp, raw, raw_hash) VALUES ('x', 'y', 'z')",
+            [],
+        );
+        assert!(result.is_err(), "read-only connection must reject writes");
+    }
+
+    #[test]
+    fn open_read_only_does_not_run_schema_migrations() {
+        // If `open_read_only` tried to CREATE IF NOT EXISTS anything, it
+        // would error against a read-only connection. Opening an empty DB
+        // that's NOT been initialized demonstrates open_read_only doesn't
+        // attempt writes of any kind.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("bare.db");
+
+        // Create a totally empty SQLite file (no schema).
+        {
+            let c = Connection::open(&db).unwrap();
+            // Ensure the file exists without creating the log_entries table.
+            c.execute_batch("PRAGMA user_version = 0;").unwrap();
+        }
+
+        // open_read_only must succeed (no migration attempt).
+        let ro = Indexer::open_read_only(&db).expect("open ro on bare db");
+
+        // Table is absent, so a SELECT errors — proving we didn't create it.
+        let err = ro
+            .connection()
+            .query_row("SELECT COUNT(*) FROM log_entries", [], |row| {
+                row.get::<_, i64>(0)
+            });
+        assert!(err.is_err());
     }
 }
