@@ -9,7 +9,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "MITS"
+license = "MIT"
 authors = ["Arya ArySmart Gorjipour"]
 repository = "https://github.com/Aryagorjipour/logdive"
 readme = "README.md"
@@ -29,6 +29,8 @@ thiserror = "1"
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }
+anstream = "0.6"
+anstyle = "1"
 
 # HTTP API
 axum = "0.7"

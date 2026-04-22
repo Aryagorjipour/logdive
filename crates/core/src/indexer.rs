@@ -76,6 +76,39 @@ impl InsertStats {
     }
 }
 
+/// Aggregate metadata about the contents of an index.
+///
+/// Produced by [`Indexer::stats`] and consumed by the CLI `stats` subcommand
+/// (milestone 7) and the `GET /stats` HTTP endpoint (milestone 8). The shape
+/// is intentionally minimal and structural; the CLI and HTTP layers format
+/// it for human or machine consumption.
+///
+/// `tags` ordering: `None` (untagged rows) first, then non-null tag strings
+/// in ascending alphabetical order. This ordering is produced directly by
+/// SQLite (`ORDER BY tag` places NULL first in ascending order) and is not
+/// re-sorted in Rust. The CLI renders the `None` slot as "(untagged)".
+///
+/// Marked `#[non_exhaustive]` so additional summary fields (e.g. distinct
+/// level counts) can be added in later milestones without breaking the
+/// public API.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct Stats {
+    /// Total number of rows currently in the `log_entries` table.
+    pub entries: u64,
+    /// Lexically smallest `timestamp` value in the index, or `None` on an
+    /// empty database. Lexical ordering is correct for ISO-8601 timestamps;
+    /// see the "live design decisions" section of the project handoff.
+    pub min_timestamp: Option<String>,
+    /// Lexically largest `timestamp` value in the index, or `None` on an
+    /// empty database.
+    pub max_timestamp: Option<String>,
+    /// Distinct tag values observed across all rows. `None` represents rows
+    /// with no tag (SQL NULL) and — when present — is always the first
+    /// element; non-null tags follow in ascending alphabetical order.
+    pub tags: Vec<Option<String>>,
+}
+
 /// Owning handle over a SQLite connection to a logdive index.
 #[derive(Debug)]
 pub struct Indexer {
@@ -123,6 +156,51 @@ impl Indexer {
             total.extend(stats);
         }
         Ok(total)
+    }
+
+    /// Read aggregate metadata about the index.
+    ///
+    /// Runs three read-only queries:
+    /// 1. `COUNT(*)` for the row count,
+    /// 2. `MIN(timestamp), MAX(timestamp)` for the time range,
+    /// 3. `SELECT DISTINCT tag ... ORDER BY tag` for the tag list.
+    ///
+    /// On an empty database, returns `entries = 0`, both timestamp bounds
+    /// as `None`, and an empty `tags` vector — not an error.
+    pub fn stats(&self) -> Result<Stats> {
+        // COUNT(*) is always non-negative; cast i64 → u64 is well-defined.
+        let entries_i64: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM log_entries", [], |row| row.get(0))?;
+        let entries = entries_i64 as u64;
+
+        // Aggregates without GROUP BY always yield exactly one row; MIN/MAX
+        // on an empty table return (NULL, NULL), which maps cleanly to
+        // (None, None) via rusqlite's Option<T> FromSql impl.
+        let (min_timestamp, max_timestamp): (Option<String>, Option<String>) =
+            self.conn.query_row(
+                "SELECT MIN(timestamp), MAX(timestamp) FROM log_entries",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+
+        // SQLite's `ORDER BY tag` (default ascending) places NULLs first,
+        // which is exactly the ordering contract advertised on `Stats.tags`.
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT tag FROM log_entries ORDER BY tag")?;
+        let rows = stmt.query_map([], |row| row.get::<_, Option<String>>(0))?;
+        let mut tags: Vec<Option<String>> = Vec::new();
+        for row in rows {
+            tags.push(row?);
+        }
+
+        Ok(Stats {
+            entries,
+            min_timestamp,
+            max_timestamp,
+            tags,
+        })
     }
 }
 
@@ -461,5 +539,103 @@ mod tests {
             }
             other => panic!("expected Io variant, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // stats()
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn stats_empty_database_returns_zeroed_values() {
+        let idx = Indexer::open_in_memory().unwrap();
+        let stats = idx.stats().unwrap();
+
+        assert_eq!(stats.entries, 0);
+        assert_eq!(stats.min_timestamp, None);
+        assert_eq!(stats.max_timestamp, None);
+        assert!(stats.tags.is_empty());
+    }
+
+    #[test]
+    fn stats_counts_entries() {
+        let mut idx = Indexer::open_in_memory().unwrap();
+        let entries: Vec<_> = (0..5)
+            .map(|i| make_entry("2026-04-20T10:00:00Z", "info", &format!("msg-{i}")))
+            .collect();
+        idx.insert_batch(&entries).unwrap();
+
+        let stats = idx.stats().unwrap();
+        assert_eq!(stats.entries, 5);
+    }
+
+    #[test]
+    fn stats_timestamp_range_uses_lexical_min_and_max() {
+        let mut idx = Indexer::open_in_memory().unwrap();
+        // Insert intentionally out-of-order to confirm MIN/MAX, not insertion
+        // order, drives the bounds.
+        idx.insert_batch(&[
+            make_entry("2026-04-22T15:30:00Z", "error", "second"),
+            make_entry("2026-04-20T10:00:00Z", "info", "first"),
+            make_entry("2026-04-21T12:00:00Z", "warn", "third"),
+        ])
+        .unwrap();
+
+        let stats = idx.stats().unwrap();
+        assert_eq!(stats.min_timestamp.as_deref(), Some("2026-04-20T10:00:00Z"));
+        assert_eq!(stats.max_timestamp.as_deref(), Some("2026-04-22T15:30:00Z"));
+    }
+
+    #[test]
+    fn stats_distinct_tags_place_untagged_first_then_alphabetical() {
+        let mut idx = Indexer::open_in_memory().unwrap();
+
+        // One untagged row.
+        let untagged = make_entry("2026-04-20T10:00:00Z", "info", "untagged-msg");
+
+        // Two distinct rows sharing tag "api" — must collapse via DISTINCT.
+        let mut api1 = make_entry("2026-04-20T10:00:01Z", "info", "api-msg-1");
+        api1.tag = Some("api".to_string());
+        let mut api2 = make_entry("2026-04-20T10:00:02Z", "info", "api-msg-2");
+        api2.tag = Some("api".to_string());
+
+        // One row with tag "payments".
+        let mut payments = make_entry("2026-04-20T10:00:03Z", "info", "payments-msg");
+        payments.tag = Some("payments".to_string());
+
+        idx.insert_batch(&[untagged, api1, api2, payments]).unwrap();
+
+        let stats = idx.stats().unwrap();
+        assert_eq!(stats.tags.len(), 3);
+        // NULL comes first in SQLite's ascending sort.
+        assert_eq!(stats.tags[0], None);
+        assert_eq!(stats.tags[1], Some("api".to_string()));
+        assert_eq!(stats.tags[2], Some("payments".to_string()));
+    }
+
+    #[test]
+    fn stats_entries_count_respects_dedup() {
+        let mut idx = Indexer::open_in_memory().unwrap();
+        // Two batches of the same entry — second is deduplicated away.
+        idx.insert_batch(&[make_entry("2026-04-20T10:00:00Z", "info", "dup")])
+            .unwrap();
+        idx.insert_batch(&[make_entry("2026-04-20T10:00:00Z", "info", "dup")])
+            .unwrap();
+
+        let stats = idx.stats().unwrap();
+        assert_eq!(stats.entries, 1);
+    }
+
+    #[test]
+    fn stats_entries_count_excludes_timestamp_less_entries() {
+        let mut idx = Indexer::open_in_memory().unwrap();
+
+        let mut no_ts = LogEntry::new(r#"{"level":"info"}"#);
+        no_ts.level = Some("info".to_string());
+
+        idx.insert_batch(&[make_entry("2026-04-20T10:00:00Z", "info", "present"), no_ts])
+            .unwrap();
+
+        let stats = idx.stats().unwrap();
+        assert_eq!(stats.entries, 1);
     }
 }

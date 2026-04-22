@@ -1,14 +1,22 @@
 //! `logdive` CLI entry point.
 //!
-//! Milestone 6 wires up the `ingest` subcommand: read structured JSON logs
-//! from a file or stdin, parse each line via `logdive_core::parser`, and
-//! insert batched entries into a SQLite-backed index via
-//! `logdive_core::indexer`. Progress is printed to stderr so stdout stays
-//! free for future subcommands that emit data.
+//! Milestones wired up:
+//!   - m6: `ingest` — read structured JSON logs from a file or stdin,
+//!     parse, and insert batched entries into the index.
+//!   - m7: `query` — parse a query string, run it against the index,
+//!     and render matching entries to stdout in `pretty` or `json`
+//!     form.
+//!   - m7: `stats` — report aggregate metadata about the index.
 //!
-//! Subsequent milestones will add `query` and `stats` subcommands — the
-//! dispatch structure below is already set up to accept them without
-//! restructuring.
+//! Database-opening policy is per-subcommand rather than hoisted into
+//! `run()`: `ingest` and `query` create the index file as needed (the
+//! user expects to be able to ingest into a fresh DB, or query one
+//! they've just created), while `stats` refuses to run against a
+//! non-existent path so typos in `--db` surface as errors rather than
+//! misleading zero-entry readouts.
+
+mod render;
+mod stats_cmd;
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
@@ -20,8 +28,12 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use logdive_core::{
-    db_path, parse_line, Indexer, InsertStats, LogEntry, LogdiveError, Result, BATCH_SIZE,
+    db_path, execute, parse_line, parse_query, Indexer, InsertStats, LogEntry, LogdiveError,
+    QueryParseError, Result, BATCH_SIZE,
 };
+
+use crate::render::{render, OutputFormat};
+use crate::stats_cmd::{run_stats, StatsArgs};
 
 // ---------------------------------------------------------------------------
 // CLI grammar
@@ -49,6 +61,10 @@ struct Cli {
 enum Command {
     /// Ingest structured JSON log lines from a file or stdin into the index.
     Ingest(IngestArgs),
+    /// Run a query against the index and render matching entries.
+    Query(QueryArgs),
+    /// Report aggregate metadata about the index.
+    Stats(StatsArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -63,6 +79,23 @@ struct IngestArgs {
     tag: Option<String>,
 }
 
+#[derive(clap::Args, Debug)]
+struct QueryArgs {
+    /// Query expression, e.g. `level=error AND service=payments last 2h`.
+    ///
+    /// Multi-token queries must be quoted on the shell.
+    #[arg(value_name = "QUERY")]
+    query: String,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
+    format: OutputFormat,
+
+    /// Maximum number of results to return. Use `0` for unlimited.
+    #[arg(long, default_value_t = 1000)]
+    limit: usize,
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -74,9 +107,22 @@ fn main() -> ExitCode {
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("logdive: {e}");
+            report_error(&e);
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Render an error message for the user. `QueryParseError` is surfaced
+/// with a "query error:" prefix so users can tell parse failures apart
+/// from I/O or storage failures. Caret-rendering against the source
+/// string is deferred to milestone 9 polish.
+fn report_error(e: &LogdiveError) {
+    if let LogdiveError::QueryParse(qpe) = e {
+        let qpe: &QueryParseError = qpe;
+        eprintln!("logdive: query error: {qpe}");
+    } else {
+        eprintln!("logdive: {e}");
     }
 }
 
@@ -93,10 +139,19 @@ fn init_tracing() {
 
 fn run(cli: Cli) -> Result<()> {
     let db = db_path(cli.db.as_deref());
-    let mut indexer = Indexer::open(&db)?;
 
+    // Each subcommand decides for itself how to treat the DB path — see
+    // the module-level note on the rationale.
     match cli.command {
-        Command::Ingest(args) => run_ingest(&mut indexer, args),
+        Command::Ingest(args) => {
+            let mut indexer = Indexer::open(&db)?;
+            run_ingest(&mut indexer, args)
+        }
+        Command::Query(args) => {
+            let indexer = Indexer::open(&db)?;
+            run_query(&indexer, args)
+        }
+        Command::Stats(args) => run_stats(&db, args),
     }
 }
 
@@ -200,7 +255,31 @@ fn run_ingest(indexer: &mut Indexer, args: IngestArgs) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Progress output
+// Query
+// ---------------------------------------------------------------------------
+
+fn run_query(indexer: &Indexer, args: QueryArgs) -> Result<()> {
+    // Parse: errors produce `LogdiveError::QueryParse` via the `From` impl
+    // in the unified error type, and are surfaced by `report_error` with a
+    // distinguishing prefix.
+    let ast = parse_query(&args.query)?;
+
+    // `--limit 0` → unlimited. Any other positive value → capped.
+    let limit = if args.limit == 0 {
+        None
+    } else {
+        Some(args.limit)
+    };
+
+    tracing::debug!(?limit, "executing query");
+    let rows = execute(&ast, indexer.connection(), limit)?;
+    tracing::debug!(result_count = rows.len(), "query returned results");
+
+    render(&rows, args.format)
+}
+
+// ---------------------------------------------------------------------------
+// Progress output (ingest)
 // ---------------------------------------------------------------------------
 
 /// Throttled progress renderer. On a TTY it rewrites one line via `\r`;
