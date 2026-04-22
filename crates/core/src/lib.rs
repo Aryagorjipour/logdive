@@ -8,11 +8,13 @@
 //! HTTP server binary.
 
 pub mod entry;
+pub mod executor;
 pub mod indexer;
 pub mod parser;
 pub mod query;
 
 pub use entry::LogEntry;
+pub use executor::{execute, execute_at, ExecutorError};
 pub use indexer::{db_path, Indexer, InsertStats, BATCH_SIZE};
 pub use parser::parse_line;
 pub use query::{
