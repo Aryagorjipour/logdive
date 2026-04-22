@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection};
 
 use crate::entry::LogEntry;
+use crate::error::{LogdiveError, Result};
 
 /// Size of a single insert transaction, per the decisions log
 /// (2026-04-19: "batch insert per 1000 lines").
@@ -76,6 +77,7 @@ impl InsertStats {
 }
 
 /// Owning handle over a SQLite connection to a logdive index.
+#[derive(Debug)]
 pub struct Indexer {
     conn: Connection,
 }
@@ -85,7 +87,7 @@ impl Indexer {
     ///
     /// Creates the parent directory if it does not already exist, opens the
     /// SQLite database, and runs idempotent schema migrations.
-    pub fn open(path: &Path) -> rusqlite::Result<Self> {
+    pub fn open(path: &Path) -> Result<Self> {
         ensure_parent_dir(path)?;
         let conn = Connection::open(path)?;
         init_schema(&conn)?;
@@ -94,7 +96,7 @@ impl Indexer {
 
     /// Open an in-memory index. Used by tests; also usable for one-shot
     /// scenarios that don't need persistence.
-    pub fn open_in_memory() -> rusqlite::Result<Self> {
+    pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         init_schema(&conn)?;
         Ok(Self { conn })
@@ -102,9 +104,9 @@ impl Indexer {
 
     /// Borrow the underlying connection.
     ///
-    /// Exposed so milestone 4's query executor can run reads without an
-    /// extra abstraction layer. Read-only borrow keeps ingestion and
-    /// querying from contending over `&mut`.
+    /// Exposed so the query executor can run reads without an extra
+    /// abstraction layer. Read-only borrow keeps ingestion and querying
+    /// from contending over `&mut`.
     pub fn connection(&self) -> &Connection {
         &self.conn
     }
@@ -114,7 +116,7 @@ impl Indexer {
     ///
     /// Returns aggregate stats across all chunks. Entry ordering within
     /// the index is not guaranteed.
-    pub fn insert_batch(&mut self, entries: &[LogEntry]) -> rusqlite::Result<InsertStats> {
+    pub fn insert_batch(&mut self, entries: &[LogEntry]) -> Result<InsertStats> {
         let mut total = InsertStats::default();
         for chunk in entries.chunks(BATCH_SIZE) {
             let stats = insert_one_chunk(&mut self.conn, chunk)?;
@@ -128,7 +130,7 @@ impl Indexer {
 // Internals
 // ---------------------------------------------------------------------------
 
-fn ensure_parent_dir(path: &Path) -> rusqlite::Result<()> {
+fn ensure_parent_dir(path: &Path) -> Result<()> {
     let Some(parent) = path.parent() else {
         return Ok(());
     };
@@ -136,21 +138,10 @@ fn ensure_parent_dir(path: &Path) -> rusqlite::Result<()> {
         // Relative filename with no directory component ("index.db").
         return Ok(());
     }
-    std::fs::create_dir_all(parent).map_err(|io_err| {
-        // Milestone 5 will replace this with a proper LogdiveError variant.
-        // For now, surface as a SqliteFailure with the semantically closest
-        // result code (can't open) plus the OS error in the message.
-        rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
-            Some(format!(
-                "failed to create directory {}: {io_err}",
-                parent.display()
-            )),
-        )
-    })
+    std::fs::create_dir_all(parent).map_err(|io_err| LogdiveError::io_at(parent, io_err))
 }
 
-fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
+fn init_schema(conn: &Connection) -> Result<()> {
     // Schema taken verbatim from the project doc's "SQLite schema" section,
     // with `IF NOT EXISTS` added on every statement so open() is idempotent.
     conn.execute_batch(
@@ -168,10 +159,11 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_level     ON log_entries(level);
         CREATE INDEX IF NOT EXISTS idx_tag       ON log_entries(tag);
         CREATE INDEX IF NOT EXISTS idx_timestamp ON log_entries(timestamp);",
-    )
+    )?;
+    Ok(())
 }
 
-fn insert_one_chunk(conn: &mut Connection, entries: &[LogEntry]) -> rusqlite::Result<InsertStats> {
+fn insert_one_chunk(conn: &mut Connection, entries: &[LogEntry]) -> Result<InsertStats> {
     let tx = conn.transaction()?;
     let mut stats = InsertStats::default();
 
@@ -309,7 +301,6 @@ mod tests {
         let mut idx = Indexer::open_in_memory().unwrap();
         let mut no_ts = LogEntry::new(r#"{"level":"info"}"#);
         no_ts.level = Some("info".to_string());
-        // timestamp intentionally left as None.
 
         let stats = idx.insert_batch(&[no_ts]).unwrap();
         assert_eq!(stats.inserted, 0);
@@ -325,8 +316,6 @@ mod tests {
     #[test]
     fn mixed_batch_counts_each_outcome_category() {
         let mut idx = Indexer::open_in_memory().unwrap();
-        // Prime the index with one row so the re-insert in the mixed batch
-        // exercises the dedup path.
         idx.insert_batch(&[make_entry("2026-04-20T10:00:00Z", "info", "first")])
             .unwrap();
 
@@ -334,11 +323,8 @@ mod tests {
         no_ts.level = Some("warn".to_string());
 
         let mixed = vec![
-            // Same raw as the primed row → deduplicated.
             make_entry("2026-04-20T10:00:00Z", "info", "first"),
-            // Fresh row → inserted.
             make_entry("2026-04-20T10:00:05Z", "error", "second"),
-            // No timestamp → skipped.
             no_ts,
         ];
         let stats = idx.insert_batch(&mixed).unwrap();
@@ -406,7 +392,7 @@ mod tests {
     #[test]
     fn chunking_handles_batches_larger_than_batch_size() {
         let mut idx = Indexer::open_in_memory().unwrap();
-        let total = BATCH_SIZE + 337; // Forces two transactions.
+        let total = BATCH_SIZE + 337;
         let entries: Vec<_> = (0..total)
             .map(|i| make_entry("2026-04-20T10:00:00Z", "info", &format!("message-{i}")))
             .collect();
@@ -455,6 +441,25 @@ mod tests {
                 .query_row("SELECT COUNT(*) FROM log_entries", [], |row| row.get(0))
                 .unwrap();
             assert_eq!(count, 1);
+        }
+    }
+
+    #[test]
+    fn io_error_variant_attaches_parent_path() {
+        // If the parent directory cannot be created (e.g. because it lives
+        // under a regular file), we should get LogdiveError::Io with the
+        // offending path, not a SqliteFailure.
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let bad_db = blocker.join("child").join("index.db");
+
+        let err = Indexer::open(&bad_db).unwrap_err();
+        match err {
+            LogdiveError::Io { path, .. } => {
+                assert!(path.starts_with(dir.path()));
+            }
+            other => panic!("expected Io variant, got {other:?}"),
         }
     }
 }

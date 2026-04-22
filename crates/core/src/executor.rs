@@ -2,14 +2,14 @@
 //! it against the index, and reconstruct [`LogEntry`] values from the
 //! result rows.
 //!
-//! This module is the bridge between the query AST (milestone 3) and the
-//! SQLite schema (milestone 2). It never mixes user-controlled strings
-//! into SQL text — every literal value is bound as a parameter. The one
-//! exception is JSON extraction paths like `$.service`, which embed the
-//! field name directly because SQLite parameters aren't allowed inside
-//! `json_extract` path expressions; safety there comes from the field
-//! name having passed `validate_field_name`'s strict regex in the parser,
-//! which we defensively re-check at the executor boundary.
+//! This module is the bridge between the query AST and the SQLite schema.
+//! It never mixes user-controlled strings into SQL text — every literal
+//! value is bound as a parameter. The one exception is JSON extraction
+//! paths like `$.service`, which embed the field name directly because
+//! SQLite parameters aren't allowed inside `json_extract` path expressions;
+//! safety there comes from the field name having passed
+//! `validate_field_name`'s strict regex in the parser, which we
+//! defensively re-check at the executor boundary.
 //!
 //! # Timestamp handling
 //!
@@ -19,56 +19,13 @@
 //! shaped will compare incorrectly against `last`/`since` bounds — a known
 //! limitation of accepting arbitrary timestamp strings at ingestion time.
 
-use std::collections::HashSet;
-use std::fmt;
-
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use rusqlite::{params_from_iter, types::Value as SqlValue, Connection};
 use serde_json::{Map, Value};
 
 use crate::entry::LogEntry;
-use crate::query::{Clause, CompareOp, Duration, DurationUnit, QueryNode, QueryValue};
-
-/// Errors the executor can produce.
-///
-/// Milestone 5 will fold this into a unified `LogdiveError` via `thiserror`.
-/// Kept as a local type for now so this module compiles standalone.
-#[derive(Debug)]
-pub enum ExecutorError {
-    /// The `since <datetime>` clause contained a string that did not parse
-    /// as one of the accepted datetime formats.
-    InvalidDatetime { input: String, reason: String },
-    /// A field name slipped through validation and contains characters
-    /// unsafe to embed in a JSON path. Should be unreachable given the
-    /// parser's `validate_field_name` check; this variant is a
-    /// defense-in-depth guard.
-    UnsafeFieldName(String),
-    /// Underlying SQLite error.
-    Sqlite(rusqlite::Error),
-    /// A row came back with a malformed `fields` JSON column.
-    CorruptFieldsJson(serde_json::Error),
-}
-
-impl fmt::Display for ExecutorError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidDatetime { input, reason } => {
-                write!(f, "invalid datetime {input:?}: {reason}")
-            }
-            Self::UnsafeFieldName(s) => write!(f, "unsafe field name {s:?}"),
-            Self::Sqlite(e) => write!(f, "sqlite error: {e}"),
-            Self::CorruptFieldsJson(e) => write!(f, "corrupt fields JSON: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for ExecutorError {}
-
-impl From<rusqlite::Error> for ExecutorError {
-    fn from(e: rusqlite::Error) -> Self {
-        Self::Sqlite(e)
-    }
-}
+use crate::error::{LogdiveError, Result};
+use crate::query::{Clause, Duration, QueryNode, QueryValue};
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -83,7 +40,7 @@ pub fn execute(
     query: &QueryNode,
     conn: &Connection,
     limit: Option<usize>,
-) -> Result<Vec<LogEntry>, ExecutorError> {
+) -> Result<Vec<LogEntry>> {
     let (sql, binds) = build_sql(query, limit, Utc::now())?;
     run(conn, &sql, &binds)
 }
@@ -96,7 +53,7 @@ pub fn execute_at(
     conn: &Connection,
     limit: Option<usize>,
     now: DateTime<Utc>,
-) -> Result<Vec<LogEntry>, ExecutorError> {
+) -> Result<Vec<LogEntry>> {
     let (sql, binds) = build_sql(query, limit, now)?;
     run(conn, &sql, &binds)
 }
@@ -114,7 +71,7 @@ fn build_sql(
     query: &QueryNode,
     limit: Option<usize>,
     now: DateTime<Utc>,
-) -> Result<(String, Vec<Bind>), ExecutorError> {
+) -> Result<(String, Vec<Bind>)> {
     let QueryNode::And(clauses) = query;
 
     let mut where_parts: Vec<String> = Vec::with_capacity(clauses.len());
@@ -146,10 +103,7 @@ fn build_sql(
     Ok((sql, binds))
 }
 
-fn translate_clause(
-    clause: &Clause,
-    now: DateTime<Utc>,
-) -> Result<(String, Vec<Bind>), ExecutorError> {
+fn translate_clause(clause: &Clause, now: DateTime<Utc>) -> Result<(String, Vec<Bind>)> {
     match clause {
         Clause::Compare { field, op, value } => {
             let column_expr = column_for_field(field)?;
@@ -188,12 +142,12 @@ fn translate_clause(
 /// `json_extract(fields, '$.<field>')` expression — which is why the
 /// field name must survive `validate_field_name`'s regex *and* the
 /// defensive check here.
-fn column_for_field(field: &str) -> Result<String, ExecutorError> {
+fn column_for_field(field: &str) -> Result<String> {
     if LogEntry::KNOWN_KEYS.contains(&field) {
         Ok(field.to_string())
     } else {
         if !is_safe_json_path_segment(field) {
-            return Err(ExecutorError::UnsafeFieldName(field.to_string()));
+            return Err(LogdiveError::UnsafeFieldName(field.to_string()));
         }
         Ok(format!("json_extract(fields, '$.{field}')"))
     }
@@ -254,7 +208,7 @@ fn compute_last_cutoff(d: Duration, now: DateTime<Utc>) -> DateTime<Utc> {
 ///   - RFC3339 / ISO-8601 with timezone (e.g. `2024-01-01T10:00:00Z`)
 ///   - ISO naive datetime (e.g. `2024-01-01 10:00:00` or `2024-01-01T10:00:00`), interpreted as UTC
 ///   - ISO date (e.g. `2024-01-01`), interpreted as UTC midnight
-fn parse_datetime(s: &str) -> Result<DateTime<Utc>, ExecutorError> {
+fn parse_datetime(s: &str) -> Result<DateTime<Utc>> {
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
         return Ok(dt.with_timezone(&Utc));
     }
@@ -267,7 +221,7 @@ fn parse_datetime(s: &str) -> Result<DateTime<Utc>, ExecutorError> {
         let ndt = nd.and_hms_opt(0, 0, 0).expect("00:00:00 is valid");
         return Ok(Utc.from_utc_datetime(&ndt));
     }
-    Err(ExecutorError::InvalidDatetime {
+    Err(LogdiveError::InvalidDatetime {
         input: s.to_string(),
         reason: "expected RFC3339, `YYYY-MM-DD HH:MM:SS`, or `YYYY-MM-DD`".to_string(),
     })
@@ -277,7 +231,7 @@ fn parse_datetime(s: &str) -> Result<DateTime<Utc>, ExecutorError> {
 // Execution
 // ---------------------------------------------------------------------------
 
-fn run(conn: &Connection, sql: &str, binds: &[Bind]) -> Result<Vec<LogEntry>, ExecutorError> {
+fn run(conn: &Connection, sql: &str, binds: &[Bind]) -> Result<Vec<LogEntry>> {
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(params_from_iter(binds.iter()), |row| {
         let timestamp: Option<String> = row.get(0)?;
@@ -295,7 +249,7 @@ fn run(conn: &Connection, sql: &str, binds: &[Bind]) -> Result<Vec<LogEntry>, Ex
     for row in rows {
         let (timestamp, level, message, tag, fields_json, raw) = row?;
         let fields: Map<String, Value> =
-            serde_json::from_str(&fields_json).map_err(ExecutorError::CorruptFieldsJson)?;
+            serde_json::from_str(&fields_json).map_err(LogdiveError::CorruptFieldsJson)?;
         out.push(LogEntry {
             timestamp,
             level,
@@ -309,43 +263,6 @@ fn run(conn: &Connection, sql: &str, binds: &[Bind]) -> Result<Vec<LogEntry>, Ex
 }
 
 // ---------------------------------------------------------------------------
-// CompareOp → SQL
-// ---------------------------------------------------------------------------
-
-impl fmt::Display for CompareOpAsSql {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self.0 {
-            CompareOp::Eq => "=",
-            CompareOp::NotEq => "!=",
-            CompareOp::Gt => ">",
-            CompareOp::Lt => "<",
-        })
-    }
-}
-
-/// Newtype so we can have a Display impl tied to the SQL dialect
-/// independent of the user-facing one in the `query` module.
-struct CompareOpAsSql(CompareOp);
-
-// The two Display impls happen to produce identical strings for these four
-// operators, but having the dedicated wrapper makes it obvious from call
-// sites that we are formatting *for SQL*, and gives us somewhere to add
-// dialect quirks later without touching the user-facing AST.
-#[allow(dead_code)]
-fn compare_op_as_sql(op: CompareOp) -> CompareOpAsSql {
-    CompareOpAsSql(op)
-}
-
-// Silences a redundant-derive complaint: CompareOp's Display is for user
-// messages; we use it directly in `translate_clause` via `{op}`, which
-// produces the same string. If they ever diverge, swap `{op}` for
-// `{}` formatting via `compare_op_as_sql`.
-#[allow(dead_code)]
-fn _assert_op_display_used() {
-    let _ = format!("{}", CompareOp::Eq);
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -354,6 +271,7 @@ mod tests {
     use super::*;
     use crate::indexer::Indexer;
     use crate::query::parse;
+    use std::collections::HashSet;
 
     /// Convenience: parse a query string and run it against the given
     /// connection. Panics if parsing fails — tests pass well-formed input.
@@ -376,7 +294,6 @@ mod tests {
         e
     }
 
-    /// Build a small fixture: three entries across two levels and two services.
     fn fixture() -> Indexer {
         let mut idx = Indexer::open_in_memory().unwrap();
         let mut a = make_entry("2026-04-20T10:00:00Z", "error", "payment failed");
@@ -407,7 +324,7 @@ mod tests {
         let ast = parse("level=error").unwrap();
         let (sql, binds) = build_sql(&ast, None, Utc::now()).unwrap();
         assert!(sql.contains("WHERE level = ?"));
-        assert!(!sql.contains("error")); // literal must not leak into SQL
+        assert!(!sql.contains("error"));
         assert_eq!(binds.len(), 1);
         match &binds[0] {
             SqlValue::Text(s) => assert_eq!(s, "error"),
@@ -436,7 +353,6 @@ mod tests {
 
     #[test]
     fn contains_escapes_like_metacharacters() {
-        // A user searching for a literal `%` must not wildcard everything.
         let ast = parse(r#"message contains "50%""#).unwrap();
         let (_, binds) = build_sql(&ast, None, Utc::now()).unwrap();
         match &binds[0] {
@@ -452,10 +368,7 @@ mod tests {
         let (sql, binds) = build_sql(&ast, None, now).unwrap();
         assert!(sql.contains("timestamp >= ?"));
         match &binds[0] {
-            SqlValue::Text(s) => {
-                // 2 hours before 12:00 on the 20th is 10:00.
-                assert!(s.starts_with("2026-04-20T10:00:00"));
-            }
+            SqlValue::Text(s) => assert!(s.starts_with("2026-04-20T10:00:00")),
             other => panic!("unexpected bind: {other:?}"),
         }
     }
@@ -485,10 +398,7 @@ mod tests {
     fn since_rejects_garbage() {
         let ast = parse("since not-a-date").unwrap();
         let err = build_sql(&ast, None, Utc::now()).unwrap_err();
-        match err {
-            ExecutorError::InvalidDatetime { .. } => {}
-            other => panic!("expected InvalidDatetime, got {other:?}"),
-        }
+        assert!(matches!(err, LogdiveError::InvalidDatetime { .. }));
     }
 
     #[test]
@@ -596,17 +506,11 @@ mod tests {
 
     #[test]
     fn round_trip_last_duration_uses_now() {
-        // Fixture timestamps: 10:00Z, 11:00Z, 12:00Z.
         let idx = fixture();
-
-        // With "now" = 13:00Z, `last 3h` → cutoff 10:00Z (inclusive),
-        // so all three fixture entries are included.
         let now = Utc.with_ymd_and_hms(2026, 4, 20, 13, 0, 0).unwrap();
         let rows = run_query_at(idx.connection(), "last 3h", now);
         assert_eq!(rows.len(), 3);
 
-        // `last 70m` with the same "now" → cutoff 11:50Z, which excludes
-        // the 10:00Z and 11:00Z entries and includes only the 12:00Z one.
         let rows = run_query_at(idx.connection(), "last 70m", now);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].timestamp.as_deref(), Some("2026-04-20T12:00:00Z"));
@@ -636,8 +540,6 @@ mod tests {
 
     #[test]
     fn round_trip_contains_with_wildcard_character_is_literal() {
-        // Insert an entry whose message has a literal '%'; the CONTAINS
-        // query with that same character should match only the literal.
         let mut idx = Indexer::open_in_memory().unwrap();
         let a = make_entry("2026-04-20T10:00:00Z", "info", "discount 50% today");
         let b = make_entry("2026-04-20T11:00:00Z", "info", "no special char here");
@@ -672,10 +574,7 @@ mod tests {
 
     #[test]
     fn unsafe_field_name_is_rejected_at_executor() {
-        // If a malformed field name somehow bypasses the parser, the
-        // executor's re-check catches it rather than embedding unsafe
-        // characters into a JSON path.
         let result = column_for_field("service; DROP TABLE log_entries--");
-        assert!(matches!(result, Err(ExecutorError::UnsafeFieldName(_))));
+        assert!(matches!(result, Err(LogdiveError::UnsafeFieldName(_))));
     }
 }
