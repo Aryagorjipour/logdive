@@ -40,6 +40,8 @@ sh scripts/prerelease-check.sh
 
 This runs the full battery: clean working tree, build, tests, clippy, fmt, binary size check, and `cargo publish --dry-run` for each of the three crates. **Do not proceed if anything fails.**
 
+A note on the dry-run steps: `logdive-core` is fully verified (packaged and rebuilt in isolation), but `logdive` and `logdive-api` are checked with `--no-verify`. This is because those two crates depend on `logdive-core`, and the full verify step would try to resolve that dependency against crates.io. Before the first publish, that lookup fails because `logdive-core` isn't there yet. The `--no-verify` path still validates manifest shape, required fields, and packaged file set — the rebuild check just runs for real when we actually publish `logdive` and `logdive-api` (step 4 below).
+
 ### 3. Tag and push
 
 ```bash

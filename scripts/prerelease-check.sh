@@ -132,23 +132,45 @@ sh scripts/check-binary-size.sh target/release
 echo "OK: binaries are under the size limit."
 
 # ---------------------------------------------------------------------
-# 9. cargo publish --dry-run for each crate, in dependency order.
+# 9. cargo publish --dry-run for each crate.
 # ---------------------------------------------------------------------
 #
-# Run in the order we'll actually publish: core first (dep of the other
-# two), then cli and api. Even with --dry-run the second two benefit
-# from core having packaged cleanly first.
+# Ordering + verification notes:
+#
+#   logdive-core publishes first (it has no path dependencies) and is
+#   fully verified — we let cargo rebuild the crate from the produced
+#   .crate tarball to confirm it compiles in isolation.
+#
+#   logdive and logdive-api both depend on logdive-core. For these two
+#   we use --no-verify during the dry-run, because the full verify step
+#   would strip the `path` component from the workspace dependency and
+#   then try to resolve `logdive-core = "X.Y.Z"` against the real
+#   crates.io index. Before the first publish, that lookup fails with
+#   "no matching package named `logdive-core` found" — which is a known
+#   Cargo limitation when publishing multiple interdependent crates
+#   from a workspace for the first time.
+#
+#   --no-verify still validates:
+#     - Manifest is valid.
+#     - Required fields are present (description, license, etc.).
+#     - Files are correctly packaged.
+#     - No accidental inclusion of large/bogus files.
+#
+#   It skips only the rebuild-from-tarball step. That step runs for
+#   real anyway when `cargo publish -p logdive` is executed (after
+#   logdive-core is live on crates.io), so we don't lose coverage —
+#   we just move it to publish time.
 
-step "Dry-run: logdive-core"
+step "Dry-run: logdive-core (full verification)"
 cargo publish --dry-run -p logdive-core --allow-dirty
 echo "OK: logdive-core packages cleanly."
 
-step "Dry-run: logdive"
-cargo publish --dry-run -p logdive --allow-dirty
+step "Dry-run: logdive (packaging only; verify runs at real publish)"
+cargo publish --dry-run -p logdive --allow-dirty --no-verify
 echo "OK: logdive packages cleanly."
 
-step "Dry-run: logdive-api"
-cargo publish --dry-run -p logdive-api --allow-dirty
+step "Dry-run: logdive-api (packaging only; verify runs at real publish)"
+cargo publish --dry-run -p logdive-api --allow-dirty --no-verify
 echo "OK: logdive-api packages cleanly."
 
 # ---------------------------------------------------------------------
