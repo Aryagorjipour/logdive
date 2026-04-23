@@ -1,0 +1,95 @@
+name: Bug report
+description: Something works incorrectly or crashes
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. A good bug report
+        helps me fix the problem fast — please fill out the sections below.
+
+  - type: input
+    id: version
+    attributes:
+      label: logdive version
+      description: Output of `logdive --version` (or the commit hash if built from source).
+      placeholder: "logdive 0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Which component?
+      description: Where did you hit the issue?
+      options:
+        - logdive (CLI)
+        - logdive-api (HTTP server)
+        - logdive-core (library)
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS, architecture, and Rust version if built from source.
+      placeholder: "Ubuntu 24.04, x86_64, rustc 1.86.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear and concise description of what went wrong.
+      placeholder: "When I run `logdive query '...'`, I get ... instead of ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction steps
+      description: |
+        Paste the exact commands you ran. If the bug involves specific log
+        entries, include a minimal sample (a handful of lines is enough).
+      render: shell
+      placeholder: |
+        # Ingest sample
+        logdive --db /tmp/test.db ingest --file sample.log
+
+        # Query that misbehaves
+        logdive --db /tmp/test.db query 'level=error'
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output / logs
+      description: |
+        The command output and any stderr. Run with `LOGDIVE_LOG=debug` for
+        more detail.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and didn't find a duplicate.
+          required: true
+        - label: I'm using a released version (from crates.io or a tagged release) or I've noted the commit hash above.
+          required: true

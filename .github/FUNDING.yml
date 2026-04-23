@@ -1,0 +1,15 @@
+# These are the sponsor buttons / links shown at the top of the repo.
+# Fill in only the platforms you actively use — empty entries hide their
+# respective button.
+#
+# Reference: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
+
+github: [Aryagorjipour]
+
+# Additional platforms — uncomment and fill in whichever you use.
+# ko_fi: your-kofi-username
+# buy_me_a_coffee: your-bmc-username
+# patreon: your-patreon-username
+# open_collective: your-oc-project-slug
+# liberapay: your-liberapay-username
+# custom: ['https://your-custom-donation-url']

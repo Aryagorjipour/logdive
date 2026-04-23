@@ -1,0 +1,15 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Aryagorjipour/logdive/security/advisories/new
+    about: |
+      Don't file public issues for security problems. Report privately via
+      GitHub's security advisory system.
+  - name: Documentation / README improvement
+    url: https://github.com/Aryagorjipour/logdive/pulls
+    about: |
+      Small documentation fixes are easiest to submit as a pull request
+      directly.
+  - name: Rust general questions
+    url: https://users.rust-lang.org/
+    about: General Rust questions not specific to logdive are better asked here.

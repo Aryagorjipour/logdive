@@ -1,0 +1,30 @@
+name: Question
+description: Ask a usage question or get help
+title: "[question] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Questions are welcome here, but if you're stuck on a general Rust
+        question rather than a logdive-specific one, the
+        [Rust users forum](https://users.rust-lang.org/) is usually a better
+        venue.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: What's your question?
+      description: |
+        Be as specific as you can. Paste the command or query you tried,
+        the output you got, and what you were hoping to see.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What are you trying to accomplish overall?
+    validations:
+      required: false

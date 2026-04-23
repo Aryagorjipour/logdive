@@ -1,0 +1,65 @@
+name: Feature request
+description: Suggest a new feature or improvement
+title: "[feature] "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion! Before filing, please check the
+        [v1 non-goals](https://github.com/Aryagorjipour/logdive#v1-non-goals)
+        section of the README — a few common requests (OR operator,
+        authentication on the HTTP API, follow mode) are explicitly
+        deferred to v2. Those are still useful to discuss, but please
+        flag them as "v2 work" rather than "missing feature."
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: |
+        Describe the user-facing problem, not the solution you have in mind.
+        A concrete scenario is more useful than an abstract description.
+      placeholder: "When I'm debugging X, I want to be able to ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        How would you like logdive to work? Include example commands or
+        query strings if relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Are there workarounds today? How do similar tools handle this?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: willing
+    attributes:
+      label: Would you be willing to contribute a PR?
+      description: No pressure either way — just helps planning.
+      options:
+        - "Yes, I'd like to work on this"
+        - "Maybe, with guidance"
+        - "No, I'm just suggesting"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and didn't find a duplicate.
+          required: true
+        - label: I read the v1 non-goals section in the README.
+          required: true
