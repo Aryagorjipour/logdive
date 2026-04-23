@@ -77,10 +77,12 @@ impl AppState {
                 // or the runtime is shutting down. We surface both as an I/O
                 // error at the DB path so they have a path context attached,
                 // consistent with how other DB-adjacent failures are reported.
-                let io_err = std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("blocking task failed: {join_err}"),
-                );
+                //
+                // `Error::other` is the idiomatic constructor for "wrap an
+                // arbitrary error message as io::Error without caring about
+                // the specific ErrorKind" — equivalent to the older
+                // `Error::new(ErrorKind::Other, _)` pattern but clearer.
+                let io_err = std::io::Error::other(format!("blocking task failed: {join_err}"));
                 Err(LogdiveError::io_at(&self.db_path, io_err))
             }
         }
