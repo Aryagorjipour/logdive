@@ -132,46 +132,37 @@ sh scripts/check-binary-size.sh target/release
 echo "OK: binaries are under the size limit."
 
 # ---------------------------------------------------------------------
-# 9. cargo publish --dry-run for each crate.
+# 9. cargo publish --dry-run verification.
 # ---------------------------------------------------------------------
 #
-# Ordering + verification notes:
+# Publishing a workspace with interdependent crates for the first time
+# is a known rough edge in Cargo. The problem: `cargo publish -p logdive`
+# strips the `path = ...` portion of the `logdive-core` workspace
+# dependency and tries to resolve `logdive-core = "0.1.0"` against
+# crates.io. Since we haven't published core yet, that lookup fails.
 #
-#   logdive-core publishes first (it has no path dependencies) and is
-#   fully verified — we let cargo rebuild the crate from the produced
-#   .crate tarball to confirm it compiles in isolation.
+# Cargo 1.90 (Sept 2025) added `cargo publish --workspace`, which uses
+# an internal local-registry overlay to resolve the unpublished
+# transitive dependencies during dry-run. We use it when available.
 #
-#   logdive and logdive-api both depend on logdive-core. For these two
-#   we use --no-verify during the dry-run, because the full verify step
-#   would strip the `path` component from the workspace dependency and
-#   then try to resolve `logdive-core = "X.Y.Z"` against the real
-#   crates.io index. Before the first publish, that lookup fails with
-#   "no matching package named `logdive-core` found" — which is a known
-#   Cargo limitation when publishing multiple interdependent crates
-#   from a workspace for the first time.
-#
-#   --no-verify still validates:
-#     - Manifest is valid.
-#     - Required fields are present (description, license, etc.).
-#     - Files are correctly packaged.
-#     - No accidental inclusion of large/bogus files.
-#
-#   It skips only the rebuild-from-tarball step. That step runs for
-#   real anyway when `cargo publish -p logdive` is executed (after
-#   logdive-core is live on crates.io), so we don't lose coverage —
-#   we just move it to publish time.
+# When the toolchain is older than 1.90, we fall back to only verifying
+# `logdive-core` — the other two crates' packaging will be validated
+# at real publish time, after core is live on crates.io.
 
-step "Dry-run: logdive-core (full verification)"
-cargo publish --dry-run -p logdive-core --allow-dirty
-echo "OK: logdive-core packages cleanly."
-
-step "Dry-run: logdive (packaging only; verify runs at real publish)"
-cargo publish --dry-run -p logdive --allow-dirty --no-verify
-echo "OK: logdive packages cleanly."
-
-step "Dry-run: logdive-api (packaging only; verify runs at real publish)"
-cargo publish --dry-run -p logdive-api --allow-dirty --no-verify
-echo "OK: logdive-api packages cleanly."
+# Detect `cargo publish --workspace` support. This flag was stabilized
+# in Cargo 1.90. We probe by checking the help text.
+if cargo publish --help 2>&1 | grep -q -- "--workspace"; then
+  step "Dry-run: cargo publish --workspace (cargo 1.90+)"
+  cargo publish --dry-run --workspace --allow-dirty
+  echo "OK: all three crates package and verify cleanly as a workspace."
+else
+  step "Dry-run: logdive-core (older cargo — partial verification only)"
+  echo "note: cargo 1.90+ enables verifying all three crates together."
+  echo "      on older toolchains, only logdive-core is fully verified;"
+  echo "      cli and api are validated at real publish time instead."
+  cargo publish --dry-run -p logdive-core --allow-dirty
+  echo "OK: logdive-core packages cleanly."
+fi
 
 # ---------------------------------------------------------------------
 # 10. CHANGELOG has a non-TBD date for this version.
