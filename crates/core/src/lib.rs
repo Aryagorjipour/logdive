@@ -17,9 +17,9 @@ pub mod query;
 pub use entry::LogEntry;
 pub use error::{LogdiveError, Result};
 pub use executor::{execute, execute_at};
-pub use indexer::{db_path, Indexer, InsertStats, Stats, BATCH_SIZE};
+pub use indexer::{BATCH_SIZE, Indexer, InsertStats, Stats, db_path};
 pub use parser::parse_line;
 pub use query::{
-    parse as parse_query, Clause, CompareOp, Duration, DurationUnit, QueryNode, QueryParseError,
-    QueryValue,
+    Clause, CompareOp, Duration, DurationUnit, QueryNode, QueryParseError, QueryValue,
+    parse as parse_query,
 };

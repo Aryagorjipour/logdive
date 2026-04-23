@@ -28,12 +28,12 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use logdive_core::{
-    db_path, execute, parse_line, parse_query, Indexer, InsertStats, LogEntry, LogdiveError,
-    QueryParseError, Result, BATCH_SIZE,
+    BATCH_SIZE, Indexer, InsertStats, LogEntry, LogdiveError, QueryParseError, Result, db_path,
+    execute, parse_line, parse_query,
 };
 
-use crate::render::{render, OutputFormat};
-use crate::stats_cmd::{run_stats, StatsArgs};
+use crate::render::{OutputFormat, render};
+use crate::stats_cmd::{StatsArgs, run_stats};
 
 // ---------------------------------------------------------------------------
 // CLI grammar
@@ -347,11 +347,7 @@ impl Progress {
 
 fn lines_per_sec(n: usize, elapsed: Duration) -> f64 {
     let secs = elapsed.as_secs_f64();
-    if secs <= 0.0 {
-        0.0
-    } else {
-        n as f64 / secs
-    }
+    if secs <= 0.0 { 0.0 } else { n as f64 / secs }
 }
 
 fn print_summary(report: &IngestReport) {

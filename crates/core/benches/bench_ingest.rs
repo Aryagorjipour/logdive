@@ -17,10 +17,10 @@
 
 use std::path::PathBuf;
 
-use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tempfile::TempDir;
 
-use logdive_core::{parse_line, Indexer};
+use logdive_core::{Indexer, parse_line};
 
 /// Generate `n` synthetic JSON log lines. Deterministic — same `n`
 /// produces the same output across runs and machines.
@@ -87,9 +87,7 @@ fn bench_insert_batch(c: &mut Criterion) {
                 },
                 |(tmp, mut indexer)| {
                     // Measured: the actual batched insert.
-                    let stats = indexer
-                        .insert_batch(entries)
-                        .expect("insert batch");
+                    let stats = indexer.insert_batch(entries).expect("insert batch");
                     // Touch the stats so the optimizer can't eliminate them.
                     assert_eq!(stats.inserted, entries.len());
                     // Keep the tempdir alive until the closure ends so the
@@ -126,8 +124,7 @@ fn bench_parse_and_insert(c: &mut Criterion) {
                 },
                 |(tmp, mut indexer)| {
                     // Measured: parse + batched insert.
-                    let entries: Vec<_> =
-                        lines.iter().filter_map(|l| parse_line(l)).collect();
+                    let entries: Vec<_> = lines.iter().filter_map(|l| parse_line(l)).collect();
                     let stats = indexer.insert_batch(&entries).expect("insert");
                     assert_eq!(stats.inserted, entries.len());
                     drop(indexer);

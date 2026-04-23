@@ -23,7 +23,7 @@ use std::io::{self, IsTerminal, Write};
 
 use anstream::AutoStream;
 use anstyle::{AnsiColor, Color, Style};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use logdive_core::{LogEntry, Result};
 

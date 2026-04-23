@@ -501,7 +501,7 @@ impl<'a> Parser<'a> {
                 return Err(QueryParseError {
                     position: num_tok.position,
                     message: "expected a number after 'last'".to_string(),
-                })
+                });
             }
         };
         if num_str.contains('.') {
@@ -525,7 +525,7 @@ impl<'a> Parser<'a> {
                 return Err(QueryParseError {
                     position: unit_tok.position,
                     message: "expected a duration unit ('m', 'h', or 'd')".to_string(),
-                })
+                });
             }
         };
         let unit = match unit_str.as_str() {
@@ -536,7 +536,7 @@ impl<'a> Parser<'a> {
                 return Err(QueryParseError {
                     position: unit_tok.position,
                     message: format!("unknown duration unit {other:?}, expected 'm', 'h', or 'd'"),
-                })
+                });
             }
         };
 
@@ -556,7 +556,7 @@ impl<'a> Parser<'a> {
                 return Err(QueryParseError {
                     position: tok.position,
                     message: "expected a datetime after 'since'".to_string(),
-                })
+                });
             }
         };
         Ok(Clause::SinceDatetime(dt))
@@ -570,7 +570,7 @@ impl<'a> Parser<'a> {
                 return Err(QueryParseError {
                     position: field_tok.position,
                     message: "expected a field name".to_string(),
-                })
+                });
             }
         };
         validate_field_name(&field, field_tok.position)?;
@@ -594,7 +594,7 @@ impl<'a> Parser<'a> {
                         return Err(QueryParseError {
                             position: val_tok.position,
                             message: "'contains' requires a string value".to_string(),
-                        })
+                        });
                     }
                 };
                 return Ok(Clause::Contains { field, value: s });
@@ -610,7 +610,7 @@ impl<'a> Parser<'a> {
                 return Err(QueryParseError {
                     position: op_tok.position,
                     message: "expected one of =, !=, >, <, or 'contains'".to_string(),
-                })
+                });
             }
         };
 

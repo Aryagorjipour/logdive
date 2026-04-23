@@ -20,7 +20,7 @@
 //! limitation of accepting arbitrary timestamp strings at ingestion time.
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
-use rusqlite::{params_from_iter, types::Value as SqlValue, Connection};
+use rusqlite::{Connection, params_from_iter, types::Value as SqlValue};
 use serde_json::{Map, Value};
 
 use crate::entry::LogEntry;
@@ -471,9 +471,10 @@ mod tests {
         let idx = fixture();
         let rows = run_query(idx.connection(), "service=payments");
         assert_eq!(rows.len(), 2);
-        assert!(rows
-            .iter()
-            .all(|e| e.fields.get("service") == Some(&Value::String("payments".into()))));
+        assert!(
+            rows.iter()
+                .all(|e| e.fields.get("service") == Some(&Value::String("payments".into())))
+        );
     }
 
     #[test]

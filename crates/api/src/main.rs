@@ -15,7 +15,7 @@ use tracing_subscriber::EnvFilter;
 
 use logdive_api::router::build_router;
 use logdive_api::state::AppState;
-use logdive_core::{db_path, LogdiveError, Result};
+use logdive_core::{LogdiveError, Result, db_path};
 
 // ---------------------------------------------------------------------------
 // CLI

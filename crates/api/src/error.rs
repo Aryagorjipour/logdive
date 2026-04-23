@@ -24,9 +24,9 @@
 //! implicitly.
 
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::Serialize;
 
@@ -227,9 +227,11 @@ mod tests {
         let (status, text) = read_body(app_err.into_response()).await;
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(parse_error_body(&text)
-            .to_lowercase()
-            .contains("not-a-date"));
+        assert!(
+            parse_error_body(&text)
+                .to_lowercase()
+                .contains("not-a-date")
+        );
     }
 
     #[tokio::test]

@@ -5,7 +5,7 @@
 //! pure data — no I/O happens here; `AppState` carries the configuration
 //! and all I/O is deferred into the handler layer.
 
-use axum::{routing::get, Router};
+use axum::{Router, routing::get};
 
 use crate::handlers::{query_handler, stats_handler};
 use crate::state::AppState;

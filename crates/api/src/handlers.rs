@@ -6,14 +6,14 @@
 //! validation, and response shaping — nothing else.
 
 use axum::{
-    extract::{Query, State},
-    http::{header, StatusCode},
-    response::{IntoResponse, Response},
     Json,
+    extract::{Query, State},
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 
-use logdive_core::{execute, parse_query, LogEntry, Stats};
+use logdive_core::{LogEntry, Stats, execute, parse_query};
 
 use crate::error::AppError;
 use crate::state::AppState;

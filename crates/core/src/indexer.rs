@@ -27,7 +27,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, params};
 
 use crate::entry::LogEntry;
 use crate::error::{LogdiveError, Result};
