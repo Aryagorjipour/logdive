@@ -1,0 +1,60 @@
+{"timestamp":"2026-04-15T09:00:12Z","level":"info","message":"service started","service":"payments","version":"2.4.1","tag":"payments"}
+{"timestamp":"2026-04-15T09:00:15Z","level":"info","message":"connected to database pool","service":"payments","pool_size":10,"tag":"payments"}
+{"timestamp":"2026-04-15T09:00:17Z","level":"info","message":"service started","service":"orders","version":"1.8.3","tag":"orders"}
+{"timestamp":"2026-04-15T09:00:18Z","level":"info","message":"service started","service":"auth","version":"3.1.0","tag":"auth"}
+{"timestamp":"2026-04-15T09:02:33Z","level":"info","message":"user login","service":"auth","user_id":4812,"method":"POST","path":"/api/auth/login","status_code":200,"duration_ms":42,"tag":"auth"}
+{"timestamp":"2026-04-15T09:02:34Z","level":"info","message":"session created","service":"auth","user_id":4812,"session_id":"sess_9f2a1b","tag":"auth"}
+{"timestamp":"2026-04-15T09:04:11Z","level":"info","message":"order created","service":"orders","user_id":4812,"order_id":"ord_28471","total":149.99,"tag":"orders"}
+{"timestamp":"2026-04-15T09:04:18Z","level":"info","message":"payment initiated","service":"payments","order_id":"ord_28471","amount":149.99,"method":"card","tag":"payments"}
+{"timestamp":"2026-04-15T09:04:22Z","level":"info","message":"payment succeeded","service":"payments","order_id":"ord_28471","transaction_id":"txn_a3f2e9","duration_ms":384,"tag":"payments"}
+{"timestamp":"2026-04-15T09:04:23Z","level":"info","message":"order confirmed","service":"orders","order_id":"ord_28471","tag":"orders"}
+{"timestamp":"2026-04-15T09:15:44Z","level":"warn","message":"slow query detected","service":"orders","query":"SELECT * FROM orders WHERE user_id = ?","duration_ms":2143,"tag":"orders"}
+{"timestamp":"2026-04-15T09:18:02Z","level":"info","message":"user login","service":"auth","user_id":9231,"method":"POST","path":"/api/auth/login","status_code":200,"duration_ms":51,"tag":"auth"}
+{"timestamp":"2026-04-15T09:22:17Z","level":"info","message":"order created","service":"orders","user_id":9231,"order_id":"ord_28472","total":27.50,"tag":"orders"}
+{"timestamp":"2026-04-15T09:22:24Z","level":"error","message":"payment gateway timeout","service":"payments","order_id":"ord_28472","amount":27.50,"duration_ms":30000,"error_code":"GATEWAY_TIMEOUT","tag":"payments"}
+{"timestamp":"2026-04-15T09:22:25Z","level":"warn","message":"retrying payment","service":"payments","order_id":"ord_28472","attempt":2,"tag":"payments"}
+{"timestamp":"2026-04-15T09:22:47Z","level":"info","message":"payment succeeded","service":"payments","order_id":"ord_28472","transaction_id":"txn_b7c4d1","duration_ms":1983,"tag":"payments"}
+{"timestamp":"2026-04-15T09:22:48Z","level":"info","message":"order confirmed","service":"orders","order_id":"ord_28472","tag":"orders"}
+{"timestamp":"2026-04-15T09:34:09Z","level":"info","message":"health check ok","service":"payments","tag":"payments"}
+{"timestamp":"2026-04-15T09:34:09Z","level":"info","message":"health check ok","service":"orders","tag":"orders"}
+{"timestamp":"2026-04-15T09:34:09Z","level":"info","message":"health check ok","service":"auth","tag":"auth"}
+{"timestamp":"2026-04-15T09:41:52Z","level":"info","message":"user login","service":"auth","user_id":1147,"method":"POST","path":"/api/auth/login","status_code":200,"duration_ms":38,"tag":"auth"}
+{"timestamp":"2026-04-15T09:42:10Z","level":"warn","message":"rate limit approaching","service":"auth","user_id":1147,"requests_in_window":47,"limit":50,"tag":"auth"}
+{"timestamp":"2026-04-15T09:42:15Z","level":"error","message":"rate limit exceeded","service":"auth","user_id":1147,"status_code":429,"tag":"auth"}
+{"timestamp":"2026-04-15T09:51:03Z","level":"info","message":"order created","service":"orders","user_id":3388,"order_id":"ord_28473","total":89.00,"tag":"orders"}
+{"timestamp":"2026-04-15T09:51:08Z","level":"error","message":"insufficient funds","service":"payments","order_id":"ord_28473","amount":89.00,"error_code":"CARD_DECLINED","tag":"payments"}
+{"timestamp":"2026-04-15T09:51:09Z","level":"warn","message":"order cancelled","service":"orders","order_id":"ord_28473","reason":"payment_failed","tag":"orders"}
+{"timestamp":"2026-04-15T10:03:17Z","level":"info","message":"user login","service":"auth","user_id":7722,"method":"POST","path":"/api/auth/login","status_code":200,"duration_ms":44,"tag":"auth"}
+{"timestamp":"2026-04-15T10:04:01Z","level":"info","message":"order created","service":"orders","user_id":7722,"order_id":"ord_28474","total":312.75,"tag":"orders"}
+{"timestamp":"2026-04-15T10:04:08Z","level":"info","message":"payment succeeded","service":"payments","order_id":"ord_28474","transaction_id":"txn_e9f1a2","duration_ms":421,"tag":"payments"}
+{"timestamp":"2026-04-15T10:04:09Z","level":"info","message":"order confirmed","service":"orders","order_id":"ord_28474","tag":"orders"}
+{"timestamp":"2026-04-15T10:12:44Z","level":"debug","message":"cache miss","service":"orders","cache_key":"user_orders_7722","tag":"orders"}
+{"timestamp":"2026-04-15T10:12:45Z","level":"debug","message":"cache populated","service":"orders","cache_key":"user_orders_7722","entries":3,"tag":"orders"}
+{"timestamp":"2026-04-15T10:23:18Z","level":"info","message":"scheduled job started","job":"cleanup_expired_sessions","service":"auth","tag":"auth"}
+{"timestamp":"2026-04-15T10:23:22Z","level":"info","message":"scheduled job completed","job":"cleanup_expired_sessions","service":"auth","sessions_removed":142,"duration_ms":3841,"tag":"auth"}
+{"timestamp":"2026-04-15T10:34:11Z","level":"info","message":"health check ok","service":"payments","tag":"payments"}
+{"timestamp":"2026-04-15T10:34:11Z","level":"info","message":"health check ok","service":"orders","tag":"orders"}
+{"timestamp":"2026-04-15T10:34:11Z","level":"info","message":"health check ok","service":"auth","tag":"auth"}
+{"timestamp":"2026-04-15T10:47:02Z","level":"info","message":"user login","service":"auth","user_id":5091,"method":"POST","path":"/api/auth/login","status_code":200,"duration_ms":39,"tag":"auth"}
+{"timestamp":"2026-04-15T10:48:19Z","level":"error","message":"database connection lost","service":"orders","error":"connection reset by peer","tag":"orders"}
+{"timestamp":"2026-04-15T10:48:20Z","level":"warn","message":"reconnecting to database","service":"orders","attempt":1,"tag":"orders"}
+{"timestamp":"2026-04-15T10:48:21Z","level":"info","message":"database connection restored","service":"orders","tag":"orders"}
+{"timestamp":"2026-04-15T10:55:14Z","level":"info","message":"order created","service":"orders","user_id":5091,"order_id":"ord_28475","total":45.20,"tag":"orders"}
+{"timestamp":"2026-04-15T10:55:19Z","level":"info","message":"payment succeeded","service":"payments","order_id":"ord_28475","transaction_id":"txn_c8a2f0","duration_ms":367,"tag":"payments"}
+{"timestamp":"2026-04-15T10:55:20Z","level":"info","message":"order confirmed","service":"orders","order_id":"ord_28475","tag":"orders"}
+{"timestamp":"2026-04-15T11:02:47Z","level":"warn","message":"high memory usage","service":"orders","memory_mb":847,"threshold_mb":800,"tag":"orders"}
+{"timestamp":"2026-04-15T11:07:33Z","level":"info","message":"configuration reloaded","service":"payments","tag":"payments"}
+{"timestamp":"2026-04-15T11:14:28Z","level":"info","message":"user login","service":"auth","user_id":2458,"method":"POST","path":"/api/auth/login","status_code":200,"duration_ms":47,"tag":"auth"}
+{"timestamp":"2026-04-15T11:14:45Z","level":"error","message":"invalid token","service":"auth","user_id":2458,"path":"/api/orders","status_code":401,"tag":"auth"}
+{"timestamp":"2026-04-15T11:15:03Z","level":"info","message":"token refreshed","service":"auth","user_id":2458,"tag":"auth"}
+{"timestamp":"2026-04-15T11:18:52Z","level":"info","message":"order created","service":"orders","user_id":2458,"order_id":"ord_28476","total":18.99,"tag":"orders"}
+{"timestamp":"2026-04-15T11:18:57Z","level":"info","message":"payment succeeded","service":"payments","order_id":"ord_28476","transaction_id":"txn_d4b6e8","duration_ms":412,"tag":"payments"}
+{"timestamp":"2026-04-15T11:18:58Z","level":"info","message":"order confirmed","service":"orders","order_id":"ord_28476","tag":"orders"}
+{"timestamp":"2026-04-15T11:27:14Z","level":"error","message":"unhandled panic in worker","service":"payments","worker_id":3,"error":"thread 'tokio-runtime-worker' panicked at 'index out of bounds'","tag":"payments"}
+{"timestamp":"2026-04-15T11:27:15Z","level":"warn","message":"worker restarted","service":"payments","worker_id":3,"tag":"payments"}
+{"timestamp":"2026-04-15T11:34:09Z","level":"info","message":"health check ok","service":"payments","tag":"payments"}
+{"timestamp":"2026-04-15T11:34:09Z","level":"info","message":"health check ok","service":"orders","tag":"orders"}
+{"timestamp":"2026-04-15T11:34:09Z","level":"info","message":"health check ok","service":"auth","tag":"auth"}
+{"timestamp":"2026-04-15T12:48:33Z","level":"info","message":"startup diagnostics complete","version":"2.4.1","host":"server-03.example.com"}
+{"timestamp":"2026-04-15T12:51:17Z","level":"info","message":"graceful shutdown initiated","signal":"SIGTERM"}
+{"timestamp":"2026-04-15T12:51:19Z","level":"info","message":"shutdown complete","uptime_seconds":14102}

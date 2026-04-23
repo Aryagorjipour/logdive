@@ -8,9 +8,9 @@ members = [
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
-license = "MIT"
-authors = ["Arya ArySmart Gorjipour"]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["Arya (ArySmart) Gorjipour"]
 repository = "https://github.com/Aryagorjipour/logdive"
 readme = "README.md"
 rust-version = "1.85"
@@ -44,6 +44,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Dev
 tempfile = "3"
+criterion = "0.5"
 
 # Release profile — targets the "<10MB binary" task in Phase 4
 [profile.release]

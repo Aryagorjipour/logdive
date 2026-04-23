@@ -8,6 +8,8 @@ authors.workspace = true
 repository.workspace = true
 readme.workspace = true
 rust-version.workspace = true
+keywords = ["logs", "json", "sqlite", "query", "cli"]
+categories = ["command-line-utilities", "database", "parser-implementations"]
 
 [lib]
 name = "logdive_core"
@@ -24,3 +26,12 @@ tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "bench_ingest"
+harness = false
+
+[[bench]]
+name = "bench_query"
+harness = false
