@@ -428,6 +428,7 @@ Representative numbers on a modern laptop (Acer Nitro 5, Linux):
 | `CONTAINS` full-table scan (100k rows) | ~36–40 ms |
 | 3-clause `AND` chain (100k rows) | ~22 ms |
 
+
 Numbers from criterion benchmarks on an unspecified modern laptop — run `cargo bench` for your own baseline. 
 
 Release-profile binary sizes:
