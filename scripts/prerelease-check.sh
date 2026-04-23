@@ -141,25 +141,49 @@ echo "OK: binaries are under the size limit."
 # dependency and tries to resolve `logdive-core = "0.1.0"` against
 # crates.io. Since we haven't published core yet, that lookup fails.
 #
-# Cargo 1.90 (Sept 2025) added `cargo publish --workspace`, which uses
-# an internal local-registry overlay to resolve the unpublished
-# transitive dependencies during dry-run. We use it when available.
+# Cargo 1.90+ supports `cargo publish --workspace --dry-run`, which
+# uses an internal local-registry overlay to resolve the unpublished
+# transitive dependencies. We detect the Cargo version and use it
+# when available.
 #
-# When the toolchain is older than 1.90, we fall back to only verifying
-# `logdive-core` — the other two crates' packaging will be validated
-# at real publish time, after core is live on crates.io.
+# On older Cargo (pre-1.90), we fall back to verifying only
+# `logdive-core`. The cli and api crates will be validated at real
+# publish time, after core is live on crates.io.
 
-# Detect `cargo publish --workspace` support. This flag was stabilized
-# in Cargo 1.90. We probe by checking the help text.
-if cargo publish --help 2>&1 | grep -q -- "--workspace"; then
-  step "Dry-run: cargo publish --workspace (cargo 1.90+)"
+# Extract Cargo's major.minor version number. `cargo --version` prints
+# a line like: "cargo 1.86.0 (824adfb12 2025-03-22)". We parse the
+# first two numeric components.
+CARGO_VERSION_LINE=$(cargo --version)
+CARGO_MINOR=$(echo "$CARGO_VERSION_LINE" \
+  | sed -E 's/^cargo ([0-9]+)\.([0-9]+)\..*$/\2/')
+CARGO_MAJOR=$(echo "$CARGO_VERSION_LINE" \
+  | sed -E 's/^cargo ([0-9]+)\.([0-9]+)\..*$/\1/')
+
+# Sanity-check the parse. If either part is non-numeric, treat as old.
+case "$CARGO_MAJOR" in
+  *[!0-9]*|'') CARGO_MAJOR=0 ;;
+esac
+case "$CARGO_MINOR" in
+  *[!0-9]*|'') CARGO_MINOR=0 ;;
+esac
+
+# `cargo publish --workspace` on stable requires Cargo >= 1.90.
+USE_WORKSPACE_DRY_RUN=0
+if [ "$CARGO_MAJOR" -gt 1 ]; then
+  USE_WORKSPACE_DRY_RUN=1
+elif [ "$CARGO_MAJOR" -eq 1 ] && [ "$CARGO_MINOR" -ge 90 ]; then
+  USE_WORKSPACE_DRY_RUN=1
+fi
+
+if [ "$USE_WORKSPACE_DRY_RUN" -eq 1 ]; then
+  step "Dry-run: cargo publish --workspace (cargo ${CARGO_MAJOR}.${CARGO_MINOR})"
   cargo publish --dry-run --workspace --allow-dirty
   echo "OK: all three crates package and verify cleanly as a workspace."
 else
-  step "Dry-run: logdive-core (older cargo — partial verification only)"
+  step "Dry-run: logdive-core (cargo ${CARGO_MAJOR}.${CARGO_MINOR} — partial verification)"
   echo "note: cargo 1.90+ enables verifying all three crates together."
-  echo "      on older toolchains, only logdive-core is fully verified;"
-  echo "      cli and api are validated at real publish time instead."
+  echo "      your toolchain is older; only logdive-core is fully verified."
+  echo "      cli and api will be validated at real publish time instead."
   cargo publish --dry-run -p logdive-core --allow-dirty
   echo "OK: logdive-core packages cleanly."
 fi
