@@ -233,6 +233,29 @@ async fn query_with_and_expression_narrows_results() {
 }
 
 #[tokio::test]
+async fn query_with_or_expression_returns_union() {
+    // OR is fully supported in v0.2.0. Both error rows and the info row
+    // should be returned.
+    let (_dir, db) = populated_db();
+    let router = app(db);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                // level=error OR level=info → all three fixture rows
+                .uri("/query?q=level%3Derror+OR+level%3Dinfo")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rows = parse_ndjson(&body_text(resp).await);
+    assert_eq!(rows.len(), 3);
+}
+
+#[tokio::test]
 async fn query_missing_q_parameter_returns_400() {
     let (_dir, db) = populated_db();
     let router = app(db);
@@ -276,11 +299,12 @@ async fn query_malformed_expression_returns_400() {
     let (_dir, db) = populated_db();
     let router = app(db);
 
-    // `OR` is explicitly rejected by the parser (AND-only per v1 decisions log).
+    // A syntactically broken query: `level =` has no value after the
+    // operator and is rejected by the parser regardless of grammar version.
     let resp = router
         .oneshot(
             Request::builder()
-                .uri("/query?q=level%3Derror+OR+level%3Dinfo")
+                .uri("/query?q=level+%3D")
                 .body(Body::empty())
                 .unwrap(),
         )
