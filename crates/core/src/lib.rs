@@ -20,6 +20,6 @@ pub use executor::{execute, execute_at};
 pub use indexer::{BATCH_SIZE, Indexer, InsertStats, Stats, db_path};
 pub use parser::parse_line;
 pub use query::{
-    Clause, CompareOp, Duration, DurationUnit, QueryNode, QueryParseError, QueryValue,
+    AndGroup, Clause, CompareOp, Duration, DurationUnit, QueryNode, QueryParseError, QueryValue,
     parse as parse_query,
 };
