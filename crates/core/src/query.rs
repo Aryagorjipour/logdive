@@ -1,18 +1,21 @@
 //! Query language: tokenizer, AST, and recursive descent parser.
 //!
 //! Implements the grammar from the project doc's "Notes → Query language
-//! grammar (v1)" section verbatim. AND-only per the 2026-04-19 decisions
-//! log entry — OR is deferred to v2.
+//! grammar" section, extended in v0.2.0 to support OR per the locked
+//! v0.2.0 scope (handoff doc + 2026-04-19 decisions log entry promising
+//! "OR ships in v2").
 //!
 //! This module owns *only* the parse step: `&str → QueryNode`. Translating
-//! a `QueryNode` into SQL and binding parameters is milestone 4's executor.
+//! a `QueryNode` into SQL and binding parameters is the executor's job.
 //! Resolving relative time ranges like `last 2h` against wall-clock time
 //! is also the executor's job; the AST just carries the raw spec.
 //!
-//! # Grammar (from the doc, reproduced for reference)
+//! # Grammar (v0.2.0)
 //!
 //! ```text
-//! query     := clause (AND clause)*
+//! query     := or_expr
+//! or_expr   := and_expr (OR and_expr)*
+//! and_expr  := clause (AND clause)*
 //! clause    := field OP value
 //!            | field CONTAINS string
 //!            | TIME_RANGE
@@ -23,6 +26,13 @@
 //! TIME_RANGE := "last" duration | "since" datetime
 //! duration  := number ("m" | "h" | "d")
 //! ```
+//!
+//! AND binds tighter than OR, matching SQL convention. So
+//! `level=error AND service=payments OR level=warn` parses as
+//! `(level=error AND service=payments) OR level=warn`.
+//!
+//! Explicit grouping with `(` `)` is **not** supported in v0.2.0 — users
+//! work with operator precedence only. Parens are a candidate for v0.3.
 
 use std::fmt;
 
@@ -30,13 +40,24 @@ use std::fmt;
 // AST
 // ---------------------------------------------------------------------------
 
-/// The top-level query: one or more clauses joined by AND.
+/// The top-level query: a disjunction of one or more AND-groups.
 ///
-/// A query with a single clause parses as `And(vec![clause])` so the
-/// executor has exactly one code path.
+/// A query with no OR (e.g. `level=error AND tag=api`) parses as a single-
+/// element vector containing one `AndGroup`, so the executor has exactly
+/// one code path. This mirrors the v0.1 design choice of always wrapping
+/// a single clause in `And(vec![clause])` — the same idea, lifted up one
+/// level of grammar.
 #[derive(Debug, Clone, PartialEq)]
 pub enum QueryNode {
-    And(Vec<Clause>),
+    Or(Vec<AndGroup>),
+}
+
+/// A conjunction of one or more clauses, joined by AND.
+///
+/// `clauses` is guaranteed by the parser to be non-empty.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AndGroup {
+    pub clauses: Vec<Clause>,
 }
 
 /// A single clause — the atomic unit a query is built from.
@@ -81,9 +102,9 @@ impl fmt::Display for CompareOp {
 
 /// A literal value appearing on the right-hand side of a comparison.
 ///
-/// The type distinction matters because milestone 4's executor binds
-/// numbers and booleans with their native SQLite types so numeric
-/// comparison (`req_id > 100`) uses proper ordering rather than lexical.
+/// The type distinction matters because the executor binds numbers and
+/// booleans with their native SQLite types so numeric comparison
+/// (`req_id > 100`) uses proper ordering rather than lexical.
 #[derive(Debug, Clone, PartialEq)]
 pub enum QueryValue {
     String(String),
@@ -125,8 +146,8 @@ impl DurationUnit {
 /// Parse error with a byte offset into the original input.
 ///
 /// Byte offsets (rather than line/column) are sufficient because queries
-/// are single-line. The CLI's milestone 7 pretty printer can slice the
-/// original input around `position` to render a caret.
+/// are single-line. The CLI's pretty printer can slice the original input
+/// around `position` to render a caret.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryParseError {
     pub position: usize,
@@ -255,7 +276,7 @@ fn tokenize(input: &str) -> Result<Vec<SpannedToken>, QueryParseError> {
             while i < bytes.len() && bytes[i] != b'"' {
                 // No escape handling in v1 — the grammar is `'"' .* '"'`
                 // and real log-query users don't embed quotes in values.
-                // If this becomes a pain we add escape handling in v2.
+                // If this becomes a pain we add escape handling later.
                 i += 1;
             }
             if i >= bytes.len() {
@@ -282,9 +303,8 @@ fn tokenize(input: &str) -> Result<Vec<SpannedToken>, QueryParseError> {
         //    Example: `100`, `1.5`.
         //  - Digit-led run that contains `-` or `:` → Token::Ident. This
         //    supports bare datetime literals like `2024-01-01T10:00:00Z`
-        //    after `since`, per the 2026-04-22 decision to let bare dates
-        //    tokenize as identifiers. Colon is included for completeness
-        //    so time-of-day literals don't need quoting either.
+        //    after `since`. Colon is included for completeness so time-
+        //    of-day literals don't need quoting either.
         //
         // The disambiguation happens at the first non-digit, non-dot byte:
         // if that byte is `-` or `:`, we promote the whole run (and keep
@@ -308,20 +328,6 @@ fn tokenize(input: &str) -> Result<Vec<SpannedToken>, QueryParseError> {
                 i += 1;
             }
 
-            // Second phase: if the next byte indicates this digit-led run
-            // is actually an ident (datetime, dotted version string,
-            // alphanumeric suffix, etc.), keep consuming all ident-
-            // continuation bytes and emit an Ident.
-            //
-            // Promotion triggers:
-            //   `-` or `:` — datetime literals (`2024-01-01`, `10:30`)
-            //   `.`        — dotted strings beyond one fractional part
-            //                (`1.2.3`, which can't be a valid Number)
-            //   letter     — alphanumeric suffixes (`3beta`, `v1rc2`)
-            //
-            // Note: the first phase stops at a *second* dot because the
-            // `!saw_dot` guard fires, leaving `bytes[i]` on that second
-            // dot — hence `.` being a valid trigger here.
             // Second phase: if the next byte indicates this digit-led run
             // is actually an ident (datetime, multi-dot version string),
             // keep consuming all ident-continuation bytes and emit Ident.
@@ -396,9 +402,9 @@ fn tokenize(input: &str) -> Result<Vec<SpannedToken>, QueryParseError> {
 
 /// Parse a query string into a `QueryNode`.
 ///
-/// This is the only public entry point. Implements the grammar from the
-/// project doc top-down via recursive descent, with AND chaining at the
-/// outermost level.
+/// This is the only public entry point. Implements the v0.2.0 grammar
+/// top-down via recursive descent: `or_expr` at the outermost level,
+/// `and_expr` one level in, `clause` at the leaves.
 pub fn parse(input: &str) -> Result<QueryNode, QueryParseError> {
     let tokens = tokenize(input)?;
     if tokens.is_empty() {
@@ -412,34 +418,19 @@ pub fn parse(input: &str) -> Result<QueryNode, QueryParseError> {
         tokens: &tokens,
         cursor: 0,
     };
-    let mut clauses = Vec::new();
-    clauses.push(p.parse_clause()?);
+    let node = p.parse_or_expr()?;
 
-    while let Some(tok) = p.peek() {
-        // AND is a keyword stored as an Ident. Case-insensitive.
-        match &tok.token {
-            Token::Ident(s) if s.eq_ignore_ascii_case("and") => {
-                p.advance();
-                clauses.push(p.parse_clause()?);
-            }
-            Token::Ident(s) if s.eq_ignore_ascii_case("or") => {
-                // Specific, actionable error per the doc's emphasis on good messages.
-                return Err(QueryParseError {
-                    position: tok.position,
-                    message: "OR is not supported in v1; only AND. See project doc decisions log."
-                        .to_string(),
-                });
-            }
-            _ => {
-                return Err(QueryParseError {
-                    position: tok.position,
-                    message: "expected 'AND' between clauses".to_string(),
-                });
-            }
-        }
+    // After a complete or_expr, the only acceptable state is end-of-input.
+    // If a token remains, the user wrote something the grammar doesn't
+    // accept (commonly a missing AND/OR between clauses).
+    if let Some(extra) = p.peek() {
+        return Err(QueryParseError {
+            position: extra.position,
+            message: "expected 'AND' or 'OR' between clauses".to_string(),
+        });
     }
 
-    Ok(QueryNode::And(clauses))
+    Ok(node)
 }
 
 struct Parser<'a> {
@@ -468,6 +459,99 @@ impl<'a> Parser<'a> {
             .unwrap_or(0)
     }
 
+    /// Top-level: one or more AND-groups separated by `OR`.
+    ///
+    /// AND binds tighter than OR. We always wrap the result in
+    /// `QueryNode::Or`, even for a query with no OR present — uniformity
+    /// keeps the executor simple.
+    fn parse_or_expr(&mut self) -> Result<QueryNode, QueryParseError> {
+        let mut groups = Vec::new();
+        groups.push(self.parse_and_expr()?);
+
+        while let Some(tok) = self.peek() {
+            match &tok.token {
+                Token::Ident(s) if s.eq_ignore_ascii_case("or") => {
+                    let or_pos = tok.position;
+                    self.advance();
+                    // Detect trailing-OR or doubled-OR before we recurse.
+                    // Without this the inner parse_and_expr would error
+                    // with a less helpful message.
+                    match self.peek() {
+                        None => {
+                            return Err(QueryParseError {
+                                position: or_pos,
+                                message: "expected a clause after 'OR'".to_string(),
+                            });
+                        }
+                        Some(next) => {
+                            if let Token::Ident(s2) = &next.token {
+                                if s2.eq_ignore_ascii_case("or") || s2.eq_ignore_ascii_case("and") {
+                                    return Err(QueryParseError {
+                                        position: next.position,
+                                        message: format!(
+                                            "expected a clause after 'OR', got '{}'",
+                                            s2.to_uppercase()
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    groups.push(self.parse_and_expr()?);
+                }
+                _ => break,
+            }
+        }
+
+        Ok(QueryNode::Or(groups))
+    }
+
+    /// One AND-group: one or more clauses joined by `AND`.
+    fn parse_and_expr(&mut self) -> Result<AndGroup, QueryParseError> {
+        let mut clauses = Vec::new();
+        clauses.push(self.parse_clause()?);
+
+        while let Some(tok) = self.peek() {
+            match &tok.token {
+                Token::Ident(s) if s.eq_ignore_ascii_case("and") => {
+                    let and_pos = tok.position;
+                    self.advance();
+                    // Same trailing/double check as for OR.
+                    match self.peek() {
+                        None => {
+                            return Err(QueryParseError {
+                                position: and_pos,
+                                message: "expected a clause after 'AND'".to_string(),
+                            });
+                        }
+                        Some(next) => {
+                            if let Token::Ident(s2) = &next.token {
+                                if s2.eq_ignore_ascii_case("and") || s2.eq_ignore_ascii_case("or") {
+                                    return Err(QueryParseError {
+                                        position: next.position,
+                                        message: format!(
+                                            "expected a clause after 'AND', got '{}'",
+                                            s2.to_uppercase()
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    clauses.push(self.parse_clause()?);
+                }
+                // OR ends this AND-group; the outer or_expr loop picks it up.
+                Token::Ident(s) if s.eq_ignore_ascii_case("or") => break,
+                // Anything else also ends this AND-group; the outer parser
+                // is responsible for deciding whether that's an error
+                // (extra unconsumed token) or success (end of input).
+                _ => break,
+            }
+        }
+
+        Ok(AndGroup { clauses })
+    }
+
     fn parse_clause(&mut self) -> Result<Clause, QueryParseError> {
         let tok = self.peek().ok_or_else(|| QueryParseError {
             position: self.end_position(),
@@ -483,6 +567,14 @@ impl<'a> Parser<'a> {
             if s.eq_ignore_ascii_case("since") {
                 self.advance();
                 return self.parse_since_datetime();
+            }
+            // A leading bare AND/OR here means the grammar was violated
+            // (e.g. the input started with "OR level=error").
+            if s.eq_ignore_ascii_case("and") || s.eq_ignore_ascii_case("or") {
+                return Err(QueryParseError {
+                    position: tok.position,
+                    message: format!("unexpected '{}' at start of clause", s.to_uppercase()),
+                });
             }
         }
 
@@ -707,8 +799,20 @@ fn token_len(t: &Token) -> usize {
 mod tests {
     use super::*;
 
-    fn and_of(clauses: Vec<Clause>) -> QueryNode {
-        QueryNode::And(clauses)
+    /// Build a single-AND-group QueryNode (no OR). This is what every v0.1
+    /// query parses into in the new AST shape.
+    fn one_group(clauses: Vec<Clause>) -> QueryNode {
+        QueryNode::Or(vec![AndGroup { clauses }])
+    }
+
+    /// Build a QueryNode with multiple AND-groups (OR present).
+    fn or_of(groups: Vec<Vec<Clause>>) -> QueryNode {
+        QueryNode::Or(
+            groups
+                .into_iter()
+                .map(|clauses| AndGroup { clauses })
+                .collect(),
+        )
     }
 
     fn cmp(field: &str, op: CompareOp, value: QueryValue) -> Clause {
@@ -719,13 +823,15 @@ mod tests {
         }
     }
 
-    // --- Each operator parses correctly ---
+    // -----------------------------------------------------------------
+    // Each operator parses correctly (carried forward from v0.1)
+    // -----------------------------------------------------------------
 
     #[test]
     fn eq_operator() {
         assert_eq!(
             parse("level=error").unwrap(),
-            and_of(vec![cmp(
+            one_group(vec![cmp(
                 "level",
                 CompareOp::Eq,
                 QueryValue::String("error".into())
@@ -737,7 +843,7 @@ mod tests {
     fn not_eq_operator() {
         assert_eq!(
             parse("level!=info").unwrap(),
-            and_of(vec![cmp(
+            one_group(vec![cmp(
                 "level",
                 CompareOp::NotEq,
                 QueryValue::String("info".into())
@@ -749,7 +855,7 @@ mod tests {
     fn gt_operator_with_integer() {
         assert_eq!(
             parse("req_id > 100").unwrap(),
-            and_of(vec![cmp("req_id", CompareOp::Gt, QueryValue::Integer(100))])
+            one_group(vec![cmp("req_id", CompareOp::Gt, QueryValue::Integer(100))])
         );
     }
 
@@ -757,7 +863,7 @@ mod tests {
     fn lt_operator_with_float() {
         assert_eq!(
             parse("duration < 1.5").unwrap(),
-            and_of(vec![cmp("duration", CompareOp::Lt, QueryValue::Float(1.5))])
+            one_group(vec![cmp("duration", CompareOp::Lt, QueryValue::Float(1.5))])
         );
     }
 
@@ -765,7 +871,7 @@ mod tests {
     fn contains_operator_with_quoted_string() {
         assert_eq!(
             parse(r#"message contains "database timeout""#).unwrap(),
-            and_of(vec![Clause::Contains {
+            one_group(vec![Clause::Contains {
                 field: "message".into(),
                 value: "database timeout".into(),
             }])
@@ -776,7 +882,7 @@ mod tests {
     fn contains_operator_with_bare_word() {
         assert_eq!(
             parse("message contains timeout").unwrap(),
-            and_of(vec![Clause::Contains {
+            one_group(vec![Clause::Contains {
                 field: "message".into(),
                 value: "timeout".into(),
             }])
@@ -787,7 +893,7 @@ mod tests {
     fn contains_is_case_insensitive() {
         assert_eq!(
             parse("message CONTAINS boom").unwrap(),
-            and_of(vec![Clause::Contains {
+            one_group(vec![Clause::Contains {
                 field: "message".into(),
                 value: "boom".into(),
             }])
@@ -798,11 +904,11 @@ mod tests {
     fn boolean_value() {
         assert_eq!(
             parse("ok=true").unwrap(),
-            and_of(vec![cmp("ok", CompareOp::Eq, QueryValue::Bool(true))])
+            one_group(vec![cmp("ok", CompareOp::Eq, QueryValue::Bool(true))])
         );
         assert_eq!(
             parse("ok=FALSE").unwrap(),
-            and_of(vec![cmp("ok", CompareOp::Eq, QueryValue::Bool(false))])
+            one_group(vec![cmp("ok", CompareOp::Eq, QueryValue::Bool(false))])
         );
     }
 
@@ -810,7 +916,7 @@ mod tests {
     fn quoted_string_value_preserves_spaces() {
         assert_eq!(
             parse(r#"service="payments gateway""#).unwrap(),
-            and_of(vec![cmp(
+            one_group(vec![cmp(
                 "service",
                 CompareOp::Eq,
                 QueryValue::String("payments gateway".into())
@@ -822,17 +928,19 @@ mod tests {
     fn dotted_field_name_for_nested_json() {
         assert_eq!(
             parse("user.id=42").unwrap(),
-            and_of(vec![cmp("user.id", CompareOp::Eq, QueryValue::Integer(42))])
+            one_group(vec![cmp("user.id", CompareOp::Eq, QueryValue::Integer(42))])
         );
     }
 
-    // --- Time ranges ---
+    // -----------------------------------------------------------------
+    // Time ranges (carried forward from v0.1)
+    // -----------------------------------------------------------------
 
     #[test]
     fn last_minutes() {
         assert_eq!(
             parse("last 30m").unwrap(),
-            and_of(vec![Clause::LastDuration(Duration {
+            one_group(vec![Clause::LastDuration(Duration {
                 amount: 30,
                 unit: DurationUnit::Minutes
             })])
@@ -843,7 +951,7 @@ mod tests {
     fn last_hours() {
         assert_eq!(
             parse("last 2h").unwrap(),
-            and_of(vec![Clause::LastDuration(Duration {
+            one_group(vec![Clause::LastDuration(Duration {
                 amount: 2,
                 unit: DurationUnit::Hours
             })])
@@ -854,7 +962,7 @@ mod tests {
     fn last_days() {
         assert_eq!(
             parse("last 7d").unwrap(),
-            and_of(vec![Clause::LastDuration(Duration {
+            one_group(vec![Clause::LastDuration(Duration {
                 amount: 7,
                 unit: DurationUnit::Days
             })])
@@ -865,7 +973,7 @@ mod tests {
     fn since_datetime_is_opaque_string() {
         assert_eq!(
             parse("since 2024-01-01").unwrap(),
-            and_of(vec![Clause::SinceDatetime("2024-01-01".into())])
+            one_group(vec![Clause::SinceDatetime("2024-01-01".into())])
         );
     }
 
@@ -873,39 +981,38 @@ mod tests {
     fn since_datetime_can_be_quoted() {
         assert_eq!(
             parse(r#"since "2024-01-01T10:00:00Z""#).unwrap(),
-            and_of(vec![Clause::SinceDatetime("2024-01-01T10:00:00Z".into())])
+            one_group(vec![Clause::SinceDatetime("2024-01-01T10:00:00Z".into())])
         );
     }
 
     #[test]
     fn since_datetime_bare_with_time_component_parses() {
-        // Regression: digit-led tokens containing `-` or `:` must tokenize
-        // as Ident, not blow up mid-number.
         assert_eq!(
             parse("since 2024-01-01T10:00:00Z").unwrap(),
-            and_of(vec![Clause::SinceDatetime("2024-01-01T10:00:00Z".into())])
+            one_group(vec![Clause::SinceDatetime("2024-01-01T10:00:00Z".into())])
         );
     }
 
     #[test]
     fn since_datetime_bare_followed_by_and_clause() {
-        // The datetime must terminate at whitespace so the AND chain still works.
         assert_eq!(
             parse("since 2024-01-01 AND level=error").unwrap(),
-            and_of(vec![
+            one_group(vec![
                 Clause::SinceDatetime("2024-01-01".into()),
                 cmp("level", CompareOp::Eq, QueryValue::String("error".into())),
             ])
         );
     }
 
-    // --- AND chaining ---
+    // -----------------------------------------------------------------
+    // AND chaining (carried forward from v0.1, AST shape updated)
+    // -----------------------------------------------------------------
 
     #[test]
     fn two_clauses_with_and() {
         assert_eq!(
             parse("level=error AND service=payments").unwrap(),
-            and_of(vec![
+            one_group(vec![
                 cmp("level", CompareOp::Eq, QueryValue::String("error".into())),
                 cmp(
                     "service",
@@ -920,7 +1027,7 @@ mod tests {
     fn and_is_case_insensitive() {
         assert_eq!(
             parse("level=error and service=payments").unwrap(),
-            and_of(vec![
+            one_group(vec![
                 cmp("level", CompareOp::Eq, QueryValue::String("error".into())),
                 cmp(
                     "service",
@@ -935,7 +1042,7 @@ mod tests {
     fn three_clauses_with_time_range() {
         assert_eq!(
             parse("tag=api AND level=error AND last 30m").unwrap(),
-            and_of(vec![
+            one_group(vec![
                 cmp("tag", CompareOp::Eq, QueryValue::String("api".into())),
                 cmp("level", CompareOp::Eq, QueryValue::String("error".into())),
                 Clause::LastDuration(Duration {
@@ -946,7 +1053,227 @@ mod tests {
         );
     }
 
-    // --- Error cases: invalid input produces descriptive messages ---
+    // -----------------------------------------------------------------
+    // OR — new in v0.2.0
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn single_or_two_groups() {
+        // Most common shape: same field, two values.
+        assert_eq!(
+            parse("level=error OR level=warn").unwrap(),
+            or_of(vec![
+                vec![cmp(
+                    "level",
+                    CompareOp::Eq,
+                    QueryValue::String("error".into())
+                )],
+                vec![cmp(
+                    "level",
+                    CompareOp::Eq,
+                    QueryValue::String("warn".into())
+                )],
+            ])
+        );
+    }
+
+    #[test]
+    fn or_is_case_insensitive() {
+        let lowered = parse("level=error or level=warn").unwrap();
+        let upper = parse("level=error OR level=warn").unwrap();
+        let mixed = parse("level=error Or level=warn").unwrap();
+        assert_eq!(lowered, upper);
+        assert_eq!(lowered, mixed);
+    }
+
+    #[test]
+    fn three_or_groups() {
+        assert_eq!(
+            parse("level=error OR level=warn OR level=fatal").unwrap(),
+            or_of(vec![
+                vec![cmp(
+                    "level",
+                    CompareOp::Eq,
+                    QueryValue::String("error".into())
+                )],
+                vec![cmp(
+                    "level",
+                    CompareOp::Eq,
+                    QueryValue::String("warn".into())
+                )],
+                vec![cmp(
+                    "level",
+                    CompareOp::Eq,
+                    QueryValue::String("fatal".into())
+                )],
+            ])
+        );
+    }
+
+    #[test]
+    fn or_with_mixed_clause_types() {
+        // Each side of OR can be any kind of clause: compare, contains,
+        // or time range. They mix freely.
+        assert_eq!(
+            parse(r#"level=error OR message contains "timeout" OR last 30m"#).unwrap(),
+            or_of(vec![
+                vec![cmp(
+                    "level",
+                    CompareOp::Eq,
+                    QueryValue::String("error".into())
+                )],
+                vec![Clause::Contains {
+                    field: "message".into(),
+                    value: "timeout".into(),
+                }],
+                vec![Clause::LastDuration(Duration {
+                    amount: 30,
+                    unit: DurationUnit::Minutes
+                })],
+            ])
+        );
+    }
+
+    #[test]
+    fn and_binds_tighter_than_or() {
+        // `a=1 AND b=2 OR c=3` parses as `(a=1 AND b=2) OR (c=3)`.
+        assert_eq!(
+            parse("a=1 AND b=2 OR c=3").unwrap(),
+            or_of(vec![
+                vec![
+                    cmp("a", CompareOp::Eq, QueryValue::Integer(1)),
+                    cmp("b", CompareOp::Eq, QueryValue::Integer(2)),
+                ],
+                vec![cmp("c", CompareOp::Eq, QueryValue::Integer(3))],
+            ])
+        );
+    }
+
+    #[test]
+    fn or_then_and_groups_correctly() {
+        // `a=1 OR b=2 AND c=3` parses as `(a=1) OR (b=2 AND c=3)`.
+        assert_eq!(
+            parse("a=1 OR b=2 AND c=3").unwrap(),
+            or_of(vec![
+                vec![cmp("a", CompareOp::Eq, QueryValue::Integer(1))],
+                vec![
+                    cmp("b", CompareOp::Eq, QueryValue::Integer(2)),
+                    cmp("c", CompareOp::Eq, QueryValue::Integer(3)),
+                ],
+            ])
+        );
+    }
+
+    #[test]
+    fn or_with_and_on_both_sides() {
+        // `a=1 AND b=2 OR c=3 AND d=4` →
+        //   `(a=1 AND b=2) OR (c=3 AND d=4)`.
+        assert_eq!(
+            parse("a=1 AND b=2 OR c=3 AND d=4").unwrap(),
+            or_of(vec![
+                vec![
+                    cmp("a", CompareOp::Eq, QueryValue::Integer(1)),
+                    cmp("b", CompareOp::Eq, QueryValue::Integer(2)),
+                ],
+                vec![
+                    cmp("c", CompareOp::Eq, QueryValue::Integer(3)),
+                    cmp("d", CompareOp::Eq, QueryValue::Integer(4)),
+                ],
+            ])
+        );
+    }
+
+    #[test]
+    fn or_combines_with_time_ranges() {
+        // Common in practice: "errors in the last hour OR fatal ever".
+        assert_eq!(
+            parse("level=error AND last 1h OR level=fatal").unwrap(),
+            or_of(vec![
+                vec![
+                    cmp("level", CompareOp::Eq, QueryValue::String("error".into())),
+                    Clause::LastDuration(Duration {
+                        amount: 1,
+                        unit: DurationUnit::Hours
+                    }),
+                ],
+                vec![cmp(
+                    "level",
+                    CompareOp::Eq,
+                    QueryValue::String("fatal".into())
+                )],
+            ])
+        );
+    }
+
+    #[test]
+    fn no_or_present_still_wraps_in_or_node() {
+        // The "always wrap" invariant — even a single AND-group is
+        // structurally `Or(vec![one_group])`.
+        match parse("level=error").unwrap() {
+            QueryNode::Or(groups) => {
+                assert_eq!(groups.len(), 1);
+                assert_eq!(groups[0].clauses.len(), 1);
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // OR error cases
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn trailing_or_is_an_error() {
+        let err = parse("level=error OR").unwrap_err();
+        assert!(err.message.contains("OR"));
+        assert!(err.message.contains("clause"));
+    }
+
+    #[test]
+    fn leading_or_is_an_error() {
+        let err = parse("OR level=error").unwrap_err();
+        assert!(err.message.contains("OR"));
+    }
+
+    #[test]
+    fn double_or_is_an_error() {
+        let err = parse("level=error OR OR level=warn").unwrap_err();
+        assert!(err.message.contains("clause"));
+    }
+
+    #[test]
+    fn or_followed_by_and_is_an_error() {
+        let err = parse("level=error OR AND level=warn").unwrap_err();
+        assert!(err.message.contains("clause"));
+    }
+
+    #[test]
+    fn trailing_and_is_an_error() {
+        let err = parse("level=error AND").unwrap_err();
+        assert!(err.message.contains("AND"));
+        assert!(err.message.contains("clause"));
+    }
+
+    #[test]
+    fn leading_and_is_an_error() {
+        let err = parse("AND level=error").unwrap_err();
+        assert!(err.message.contains("AND"));
+    }
+
+    #[test]
+    fn double_and_is_an_error() {
+        let err = parse("level=error AND AND service=api").unwrap_err();
+        assert!(err.message.contains("clause"));
+    }
+
+    #[test]
+    fn and_followed_by_or_is_an_error() {
+        let err = parse("level=error AND OR level=warn").unwrap_err();
+        assert!(err.message.contains("clause"));
+    }
+
+    // -----------------------------------------------------------------
+    // Error cases carried forward from v0.1
+    // -----------------------------------------------------------------
 
     #[test]
     fn empty_query_is_an_error() {
@@ -987,13 +1314,6 @@ mod tests {
     }
 
     #[test]
-    fn or_operator_suggests_v2_deferral() {
-        let err = parse("level=error OR level=warn").unwrap_err();
-        assert!(err.message.contains("OR"));
-        assert!(err.message.contains("AND"));
-    }
-
-    #[test]
     fn bang_without_equals_is_actionable() {
         let err = parse("level!error").unwrap_err();
         assert!(err.message.contains("!="));
@@ -1009,23 +1329,21 @@ mod tests {
 
     #[test]
     fn contains_with_number_is_rejected() {
-        // The grammar says `field CONTAINS string` — a bare number is not a string.
         let err = parse("message contains 42").unwrap_err();
         assert!(err.message.contains("string"));
     }
 
     #[test]
     fn invalid_field_name_starting_with_digit() {
-        // The tokenizer turns `3foo` into a Number followed by an Ident,
-        // so the parser sees a number in field position and complains.
         let err = parse("3foo=x").unwrap_err();
         assert!(err.message.contains("field"));
     }
 
     #[test]
-    fn missing_and_between_clauses_is_actionable() {
+    fn missing_and_or_or_between_clauses_is_actionable() {
         let err = parse("level=error service=payments").unwrap_err();
-        assert!(err.message.contains("AND"));
+        // Updated message: parser now suggests AND or OR.
+        assert!(err.message.contains("AND") || err.message.contains("OR"));
     }
 
     #[test]
@@ -1040,7 +1358,9 @@ mod tests {
         assert!(err.message.contains("unit"));
     }
 
-    // --- Sanity checks on tokenizer edge cases ---
+    // -----------------------------------------------------------------
+    // Tokenizer edge cases (carried forward from v0.1)
+    // -----------------------------------------------------------------
 
     #[test]
     fn tokens_survive_around_operators_with_no_spaces() {
@@ -1055,7 +1375,7 @@ mod tests {
     fn hyphenated_bare_word_value_parses() {
         assert_eq!(
             parse("request_id=x-request-1").unwrap(),
-            and_of(vec![cmp(
+            one_group(vec![cmp(
                 "request_id",
                 CompareOp::Eq,
                 QueryValue::String("x-request-1".into())
@@ -1065,11 +1385,9 @@ mod tests {
 
     #[test]
     fn digit_led_value_with_hyphen_is_string_not_number() {
-        // `version=1.2.3-beta` — regression guard: this should be a string
-        // value, not a parse error from trying to be a number.
         assert_eq!(
             parse("version=1.2.3-beta").unwrap(),
-            and_of(vec![cmp(
+            one_group(vec![cmp(
                 "version",
                 CompareOp::Eq,
                 QueryValue::String("1.2.3-beta".into())
@@ -1079,12 +1397,9 @@ mod tests {
 
     #[test]
     fn dotted_version_string_is_not_a_number() {
-        // `version=1.2.3` — more than one dot means it can't be a float.
-        // Must tokenize as a single Ident/String, not a Number followed
-        // by an unexpected `.`.
         assert_eq!(
             parse("version=1.2.3").unwrap(),
-            and_of(vec![cmp(
+            one_group(vec![cmp(
                 "version",
                 CompareOp::Eq,
                 QueryValue::String("1.2.3".into())
@@ -1094,16 +1409,17 @@ mod tests {
 
     #[test]
     fn pure_digit_run_is_still_a_number() {
-        // Belt-and-braces: the digit-promotion logic must not accidentally
-        // turn `100` into an Ident.
         match &parse("req_id=100").unwrap() {
-            QueryNode::And(clauses) => match &clauses[0] {
-                Clause::Compare {
-                    value: QueryValue::Integer(n),
-                    ..
-                } => assert_eq!(*n, 100),
-                other => panic!("expected Integer value, got {other:?}"),
-            },
+            QueryNode::Or(groups) => {
+                assert_eq!(groups.len(), 1);
+                match &groups[0].clauses[0] {
+                    Clause::Compare {
+                        value: QueryValue::Integer(n),
+                        ..
+                    } => assert_eq!(*n, 100),
+                    other => panic!("expected Integer value, got {other:?}"),
+                }
+            }
         }
     }
 }

@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **OR operator in the query language.** Queries can now combine clauses with
+  both `AND` and `OR`. `AND` binds tighter than `OR`, matching SQL convention:
+  `level=error AND service=payments OR level=warn` is evaluated as
+  `(level=error AND service=payments) OR level=warn`. All existing clause types
+  (`=`, `!=`, `>`, `<`, `contains`, `last`, `since`) work on either side of `OR`.
+
+ Examples:
+```
+level=error OR level=warn
+level=error AND service=payments OR level=fatal
+tag=api AND level=error last 2h OR tag=worker AND level=error last 2h
+```
+
+### Changed
+
+- **Breaking (logdive-core public API):** `QueryNode` now has a single variant
+  `Or(Vec<AndGroup>)` instead of the previous `And(Vec<Clause>)`. A new
+  `AndGroup { clauses: Vec<Clause> }` type represents a conjunction of clauses
+  within a disjunction. Queries with no `OR` produce a single-element `Or` vec
+  containing one `AndGroup`, preserving the "always wrap" invariant from v0.1.0.
+  Code that matched on `QueryNode::And(_)` must be updated to match on
+  `QueryNode::Or(_)` and iterate over `AndGroup::clauses`.
+
+  `AndGroup` is re-exported from `logdive_core` at the crate root alongside
+  the other AST types.
+
+- **SQL shape for single-AND-group queries.** The executor now always
+  parenthesizes AND-groups in the emitted `WHERE` clause, even when no `OR` is
+  present. This keeps the SQL emitter uniform at the cost of one pair of
+  redundant parentheses on queries that previously emitted none. SQLite's query
+  planner is unaffected.
+
+### Notes
+
+- Explicit grouping with `(` `)` in queries is not yet supported. Operator
+  precedence (`AND` before `OR`) is the only grouping mechanism in v0.2.0.
+  Parentheses are a candidate for v0.3.
+
 ## [0.1.0] - 2026-04-23
 
 Initial release.
