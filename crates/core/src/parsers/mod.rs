@@ -28,9 +28,10 @@ use crate::entry::LogEntry;
 /// `Default` is [`LogFormat::Json`] — the v0.1.0 default carried forward
 /// so callers that don't explicitly pick a format get the same behavior
 /// they used to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LogFormat {
     /// Structured JSON, one object per line. The v0.1.0 default.
+    #[default]
     Json,
     /// logfmt — `key=value` pairs, see `parsers::logfmt`.
     Logfmt,
@@ -62,12 +63,6 @@ impl LogFormat {
             Self::Logfmt => "logfmt",
             Self::Plain => "plain",
         }
-    }
-}
-
-impl Default for LogFormat {
-    fn default() -> Self {
-        Self::Json
     }
 }
 
