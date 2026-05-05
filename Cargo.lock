@@ -820,9 +820,12 @@ version = "0.1.0"
 dependencies = [
  "anstream 0.6.21",
  "anstyle",
+ "chrono",
  "clap",
+ "criterion",
  "logdive-core",
  "serde_json",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
 ]

@@ -1,15 +1,15 @@
-//! Line-by-line parser for structured JSON log input.
+//! JSON line parser — the original v0.1 ingest path, moved into the
+//! `parsers` subdirectory in v0.2.0 alongside `logfmt` and `plain`.
 //!
-//! The single entry point [`parse_line`] takes one line of text and returns
-//! `Some(LogEntry)` if the line is a JSON object, or `None` otherwise. It
-//! never panics and never returns an error: malformed input is silently
-//! skipped, as mandated by the project doc's parser task ("graceful skip on
-//! malformed lines") and reinforced by the v1 scope note that logdive
-//! accepts structured JSON only — non-JSON lines are simply not its concern.
+//! This module produces a [`LogEntry`] from one line of JSON-formatted
+//! input. It is invoked through the format dispatcher in
+//! [`crate::parsers::parse_line`] when the caller selects
+//! [`crate::parsers::LogFormat::Json`].
 //!
-//! Known keys (`timestamp`, `level`, `message`, `tag`) are lifted into the
-//! corresponding `LogEntry` fields. All other top-level keys are preserved
-//! in `LogEntry::fields` for `json_extract()`-based querying downstream.
+//! Behavior is bit-for-bit identical to v0.1: malformed input is silently
+//! skipped (returns `None`), known keys are lifted into struct fields, and
+//! unknown keys are preserved in `LogEntry::fields` for `json_extract()`-
+//! based querying downstream.
 
 use serde_json::Value;
 
@@ -18,17 +18,17 @@ use crate::entry::LogEntry;
 /// Parse a single line of JSON log input.
 ///
 /// Returns `Some(LogEntry)` if `line` is a non-empty JSON object, otherwise
-/// `None`. The caller is expected to iterate over an input source and
-/// discard `None` results (optionally incrementing a "lines skipped"
-/// counter — the CLI does exactly this in milestone 6).
+/// `None`. Callers iterate over an input source and discard `None` results
+/// (optionally incrementing a "lines skipped" counter — the CLI does this
+/// during ingestion).
 ///
 /// # Behaviour
 ///
 /// - Empty or whitespace-only lines return `None`.
 /// - Lines that are not valid JSON return `None`.
 /// - Lines that are valid JSON but not objects (e.g. `42`, `"hi"`, `[1,2]`)
-///   return `None`, because logdive's v1 scope restricts ingestion to
-///   structured JSON logs.
+///   return `None`, because logdive's ingestion contract restricts JSON
+///   input to top-level objects.
 /// - Within an object, keys matching [`LogEntry::KNOWN_KEYS`] populate the
 ///   corresponding struct fields; all other keys go into `LogEntry::fields`.
 /// - For the known string-typed fields, non-string scalar values (numbers,
@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn valid_json_but_not_an_object_returns_none() {
-        // v1 scope: structured JSON *objects* only.
+        // Ingestion scope: structured JSON *objects* only.
         assert!(parse_line("42").is_none());
         assert!(parse_line(r#""hello""#).is_none());
         assert!(parse_line("[1,2,3]").is_none());
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn raw_is_preserved_verbatim_including_whitespace() {
-        // Dedup hashing in milestone 2 depends on byte-exact preservation.
+        // Dedup hashing depends on byte-exact preservation.
         let line = "  {\"level\":\"info\"}  ";
         let e = parse_line(line).expect("should parse");
         assert_eq!(e.raw, line);
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn empty_json_object_is_a_valid_entry() {
         // `{}` parses, produces an entry with everything None and no fields.
-        // Whether the indexer accepts such a row is milestone 2's decision.
+        // Whether the indexer accepts such a row is the indexer's call.
         let e = parse_line("{}").expect("should parse");
         assert!(e.timestamp.is_none());
         assert!(e.level.is_none());
