@@ -1,14 +1,19 @@
 //! `logdive` CLI binary.
 //!
-//! Three subcommands: `ingest`, `query`, `stats`. A global `--db` flag
-//! selects the index path; all subcommands respect it.
+//! Four subcommands: `ingest`, `query`, `stats`, `prune`. A global `--db`
+//! flag selects the index path; all subcommands respect it. The flag also
+//! reads the `LOGDIVE_DB` environment variable as a fallback, matching the
+//! `logdive-api` binary — the command-line value wins when both are set.
 //!
 //! # Changes in v0.2.0
 //!
 //! - `--format json|logfmt|plain` on `ingest` (M2: multi-format ingestion).
 //! - `--timestamp-now` on `ingest` (M2: universal fallback timestamp).
 //! - `--follow` on `ingest` with `--file` (M3: file tailing, Unix only).
+//! - `prune` subcommand (M4: time-based retention).
+//! - `LOGDIVE_DB` environment-variable fallback for `--db` (M4).
 
+mod prune_cmd;
 mod render;
 mod stats_cmd;
 
@@ -23,6 +28,7 @@ use logdive_core::{
     Indexer, InsertStats, LogEntry, LogFormat, LogdiveError, Result, db_path, execute, parse_line,
     parse_query,
 };
+use prune_cmd::{PruneArgs, run_prune};
 use render::{OutputFormat, render};
 use stats_cmd::{StatsArgs, run_stats};
 
@@ -36,9 +42,10 @@ use stats_cmd::{StatsArgs, run_stats};
 struct Cli {
     /// Path to the index database. Defaults to ~/.logdive/index.db.
     ///
-    /// Applies to all subcommands. Can also override a per-command default
-    /// with this global flag.
-    #[arg(long, global = true, value_name = "PATH")]
+    /// Applies to all subcommands. Can also be set via the `LOGDIVE_DB`
+    /// environment variable; the command-line flag takes precedence when
+    /// both are provided.
+    #[arg(long, global = true, value_name = "PATH", env = "LOGDIVE_DB")]
     db: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -53,6 +60,8 @@ enum Command {
     Query(QueryArgs),
     /// Report aggregate metadata about the index.
     Stats(StatsArgs),
+    /// Delete entries older than a cutoff, then VACUUM the database.
+    Prune(PruneArgs),
 }
 
 /// Arguments for the `ingest` subcommand.
@@ -140,6 +149,7 @@ fn main() {
         Command::Ingest(args) => handle_ingest(&db, args),
         Command::Query(args) => handle_query(&db, args),
         Command::Stats(args) => run_stats(&db, args),
+        Command::Prune(args) => run_prune(&db, args),
     };
 
     if let Err(e) = result {

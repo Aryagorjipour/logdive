@@ -76,6 +76,54 @@ logdive ingest --file syslog.log --format plain --timestamp-now
   lines. A brief mid-rotation window where the path is absent is handled
   fail-soft (empty result returned; retry on the next event).
 
+- **`prune` subcommand.** Deletes all entries with a timestamp strictly
+  older than a specified cutoff and then `VACUUM`s the database to reclaim
+  disk space. The cutoff is given one of two ways (exactly one required):
+
+  ```bash
+  # Relative — delete everything older than 30 days from now:
+  logdive prune --older-than 30d
+
+  # Absolute — delete everything before a specific datetime:
+  logdive prune --before 2026-01-01
+  logdive prune --before "2026-01-01T00:00:00Z"
+  logdive prune --before "2026-01-01 00:00:00"
+  ```
+
+  `--older-than` accepts a whole number followed by `m` (minutes), `h`
+  (hours), or `d` (days). `--before` accepts the same three datetime
+  shapes as the query language's `since` clause: RFC3339, a naive
+  `YYYY-MM-DD HH:MM:SS` (UTC), or a bare `YYYY-MM-DD` date (UTC
+  midnight).
+
+  By default `prune` prints how many entries would be deleted and asks
+  for interactive `[y/N]` confirmation before touching the database. If
+  the cutoff matches zero entries, `prune` prints "Nothing to prune" and
+  exits without prompting. Use `--yes` to bypass the prompt for scripts
+  and scheduled jobs.
+
+  The `DELETE` and subsequent `VACUUM` are issued as separate autocommit
+  statements; SQLite forbids `VACUUM` inside an explicit transaction.
+
+- **`PruneStats` type in `logdive-core`.** `Indexer::prune(cutoff: &str)
+  -> Result<PruneStats>` handles the `DELETE` and `VACUUM` and returns
+  `PruneStats { deleted: u64 }`, making the operation available to any
+  downstream consumer of the library, not only the CLI.
+
+- **`LOGDIVE_DB` environment variable on the CLI `--db` flag.** The
+  global `--db` flag on the `logdive` binary now accepts `LOGDIVE_DB` as
+  a fallback, matching the `logdive-api` binary. The command-line flag
+  takes precedence when both are set. This makes it easy to pin a custom
+  index path for an entire shell session without passing `--db` to every
+  invocation:
+
+  ```bash
+  export LOGDIVE_DB=/data/prod.db
+  logdive ingest --file app.log
+  logdive query 'level=error'
+  logdive prune --older-than 30d --yes
+  ```
+
 ### Changed
 
 - **Breaking (logdive-core public API):** `QueryNode` now has a single variant
@@ -141,6 +189,13 @@ know the format.
   `ReadDirectoryChangesW` and an alternative rotation heuristic is a candidate
   for v0.3. Attempting `--follow` on a non-Unix build produces a clear runtime
   error.
+
+- **`prune` timestamp comparison is lexical.** `Indexer::prune` compares the
+  cutoff string against the `timestamp TEXT` column lexically, the same
+  contract that `last`/`since` query clauses use. This is correct for
+  ISO-8601/RFC3339 timestamps. Non-ISO-shaped timestamps in the index will
+  compare incorrectly — the same known limitation that applies to time-range
+  queries.
 
 ## [0.1.0] - 2026-04-23
 
