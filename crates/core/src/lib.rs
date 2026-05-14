@@ -10,6 +10,10 @@
 //! v0.2.0 introduced multi-format ingestion: JSON, logfmt, and plain text.
 //! See [`parsers`] for the format-specific parsers and the format-aware
 //! [`parse_line`] dispatcher.
+//!
+//! v0.2.0 also introduces [`follow`] (Unix-only), which provides
+//! [`FileTailer`] for tracking a growing file and detecting log rotation
+//! and truncation. Used by the CLI's `--follow` flag.
 
 pub mod entry;
 pub mod error;
@@ -17,6 +21,9 @@ pub mod executor;
 pub mod indexer;
 pub mod parsers;
 pub mod query;
+
+#[cfg(unix)]
+pub mod follow;
 
 pub use entry::LogEntry;
 pub use error::{LogdiveError, Result};
@@ -27,3 +34,6 @@ pub use query::{
     AndGroup, Clause, CompareOp, Duration, DurationUnit, QueryNode, QueryParseError, QueryValue,
     parse as parse_query,
 };
+
+#[cfg(unix)]
+pub use follow::FileTailer;
