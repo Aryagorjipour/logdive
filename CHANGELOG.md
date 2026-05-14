@@ -48,6 +48,34 @@ logdive ingest --file syslog.log --format plain --timestamp-now
   format-specific parsers (`parsers::json`, `parsers::logfmt`, `parsers::plain`)
   for downstream consumers that want to bypass the dispatcher.
 
+- **`--follow` flag on `logdive ingest` (Unix only).** Tails a file
+  continuously, ingesting newly appended lines as they arrive — the same
+  semantics as `tail -f`. Requires `--file`; piping from stdin already
+  streams until EOF and does not need this flag (clap rejects the
+  combination with an actionable error).
+
+  ```bash
+  logdive ingest --file /var/log/app.log --follow
+  logdive ingest --file /var/log/app.log --follow --tag production --format logfmt
+  ```
+
+  The watch loop uses OS-native filesystem events (inotify on Linux,
+  FSEvents on macOS) via the `notify` crate, with a one-second periodic
+  safety drain to catch any bytes that arrive without an event. The loop
+  exits cleanly on Ctrl-C. A summary of ingested / deduplicated /
+  skipped lines is printed on exit.
+
+- **Rotation and truncation detection in `FileTailer` (`logdive-core`,
+  Unix only).** The new `follow` module tracks a file's `(dev, ino)` pair
+  on every read. A changed pair indicates log rotation (the file was
+  renamed away and a new one created at the same path); the tailer
+  re-opens the path and resets the offset to 0. If the file size drops
+  below the tracked offset (in-place truncation via `>` redirect or
+  `truncate(1)`), the offset likewise resets to 0. Both transitions are
+  handled transparently — the follow loop sees only a stream of complete
+  lines. A brief mid-rotation window where the path is absent is handled
+  fail-soft (empty result returned; retry on the next event).
+
 ### Changed
 
 - **Breaking (logdive-core public API):** `QueryNode` now has a single variant
@@ -107,6 +135,12 @@ know the format.
   the time. Use `--timestamp-now` to stamp the ingestion time onto plaintext
   rows so they survive the indexer's no-fabrication policy. For structured
   level filtering, ingest as JSON or logfmt instead.
+
+- **`--follow` is Unix-only in v0.2.0.** The `(dev, ino)` rotation detection
+  strategy requires `std::os::unix::fs::MetadataExt`. Windows support via
+  `ReadDirectoryChangesW` and an alternative rotation heuristic is a candidate
+  for v0.3. Attempting `--follow` on a non-Unix build produces a clear runtime
+  error.
 
 ## [0.1.0] - 2026-04-23
 

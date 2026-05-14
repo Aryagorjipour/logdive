@@ -1,149 +1,410 @@
-//! Ingestion throughput benchmarks.
+//! `logdive` CLI binary.
 //!
-//! Measures the full ingestion path: parse each JSON line, construct a
-//! `LogEntry`, blake3-hash the raw line, and insert a batch into a fresh
-//! on-disk SQLite index.
+//! Three subcommands: `ingest`, `query`, `stats`. A global `--db` flag
+//! selects the index path; all subcommands respect it.
 //!
-//! We report throughput in elements (lines) per second via
-//! `Throughput::Elements`. The primary number users want from these
-//! benchmarks is "how many lines per second can logdive index?" and
-//! criterion's throughput reporting surfaces that directly alongside
-//! the time-per-batch measurement.
+//! # Changes in v0.2.0
 //!
-//! Each sample starts from an empty temp-dir-backed database. We do not
-//! reuse the database across iterations because `INSERT OR IGNORE` would
-//! turn subsequent samples into no-ops (measuring hash-check speed, not
-//! ingestion).
+//! - `--format json|logfmt|plain` on `ingest` (M2: multi-format ingestion).
+//! - `--timestamp-now` on `ingest` (M2: universal fallback timestamp).
+//! - `--follow` on `ingest` with `--file` (M3: file tailing, Unix only).
 
-use std::path::PathBuf;
+mod render;
+mod stats_cmd;
 
-use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tempfile::TempDir;
+use std::io::{self, BufRead, IsTerminal};
+use std::path::{Path, PathBuf};
 
-use logdive_core::{Indexer, LogFormat, parse_line};
+use chrono::Utc;
+use clap::{Parser, Subcommand};
+use tracing_subscriber::EnvFilter;
 
-/// Generate `n` synthetic JSON log lines. Deterministic — same `n`
-/// produces the same output across runs and machines.
-///
-/// The mix of fields (level, message, service, user_id, duration_ms) is
-/// chosen to exercise both known-column lifts and the JSON blob path
-/// during insertion. Levels cycle so ingestion doesn't hit a degenerate
-/// all-same-value index, and timestamps advance monotonically so dedup
-/// via raw_hash is actually per-line rather than accidentally uniform.
-fn generate_lines(n: usize) -> Vec<String> {
-    let levels = ["info", "warn", "error", "debug"];
-    let services = ["payments", "orders", "auth", "api"];
-    (0..n)
-        .map(|i| {
-            let level = levels[i % levels.len()];
-            let service = services[i % services.len()];
-            // 2026-04-15T09:00:00Z + i seconds — far in the past for any
-            // "last Nh" queries, but always a valid ISO-8601 timestamp.
-            let hour = 9 + (i / 3600) % 24;
-            let minute = (i / 60) % 60;
-            let second = i % 60;
-            format!(
-                r#"{{"timestamp":"2026-04-15T{hour:02}:{minute:02}:{second:02}Z","level":"{level}","message":"event {i}","service":"{service}","user_id":{i},"duration_ms":{dur}}}"#,
-                dur = (i * 13) % 5000
-            )
-        })
-        .collect()
+use logdive_core::{
+    Indexer, InsertStats, LogEntry, LogFormat, LogdiveError, Result, db_path, execute, parse_line,
+    parse_query,
+};
+use render::{OutputFormat, render};
+use stats_cmd::{StatsArgs, run_stats};
+
+// ---------------------------------------------------------------------------
+// CLI definition
+// ---------------------------------------------------------------------------
+
+/// Fast, self-hosted query engine for structured JSON logs.
+#[derive(Parser, Debug)]
+#[command(name = "logdive", version, about, long_about = None)]
+struct Cli {
+    /// Path to the index database. Defaults to ~/.logdive/index.db.
+    ///
+    /// Applies to all subcommands. Can also override a per-command default
+    /// with this global flag.
+    #[arg(long, global = true, value_name = "PATH")]
+    db: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Command,
 }
 
-/// Parse a slice of lines into LogEntry values via the JSON parser.
-/// Used outside the measurement loop so ingestion benches measure the
-/// indexer path, not the parser (which has its own implicit coverage
-/// via integration tests). A separate parse-only benchmark would be
-/// additive later.
-fn parse_all(lines: &[String]) -> Vec<logdive_core::LogEntry> {
-    lines
-        .iter()
-        .filter_map(|l| parse_line(LogFormat::Json, l))
-        .collect()
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Ingest structured log lines from a file or stdin into the index.
+    Ingest(IngestArgs),
+    /// Query the index and render matching log entries.
+    Query(QueryArgs),
+    /// Report aggregate metadata about the index.
+    Stats(StatsArgs),
 }
 
-/// Open a fresh on-disk `Indexer` under the given temp directory.
-///
-/// Returns the indexer and the path so callers can reuse the path for
-/// subsequent reopenings if needed (not used here, but keeps the helper
-/// general).
-fn fresh_indexer(tmp: &TempDir) -> (Indexer, PathBuf) {
-    let path = tmp.path().join("bench.db");
-    let indexer = Indexer::open(&path).expect("open bench index");
-    (indexer, path)
+/// Arguments for the `ingest` subcommand.
+#[derive(clap::Args, Debug)]
+pub struct IngestArgs {
+    /// Read from this file instead of stdin.
+    #[arg(long, short = 'f', value_name = "PATH")]
+    file: Option<PathBuf>,
+
+    /// Attach a tag to every ingested entry that lacks a `tag` field.
+    #[arg(long, short = 't', value_name = "TAG")]
+    tag: Option<String>,
+
+    /// Input format of the log lines.
+    ///
+    /// `json` (default) expects newline-delimited JSON objects.
+    /// `logfmt` expects `key=value` pairs.
+    /// `plain` treats each line as an unstructured message.
+    #[arg(
+        long,
+        value_name = "FORMAT",
+        default_value = "json",
+        value_parser = parse_log_format
+    )]
+    format: LogFormat,
+
+    /// Stamp the current ingestion time on entries that have no timestamp.
+    ///
+    /// Without this flag, timestamp-less entries are silently skipped
+    /// (no-fabrication policy). Most useful with `--format plain`.
+    #[arg(long)]
+    timestamp_now: bool,
+
+    /// Watch the file for newly appended lines and ingest them continuously.
+    ///
+    /// Requires `--file`. Stdin already streams until EOF; `--follow` is
+    /// not needed and is rejected with an actionable error message.
+    ///
+    /// Unix only. Exits cleanly on Ctrl-C.
+    #[arg(long, requires = "file")]
+    follow: bool,
+
+    /// Exit the follow loop after this many filesystem events.
+    ///
+    /// Hidden flag for deterministic testing of the watch loop; not
+    /// intended for end-user use.
+    #[arg(long, value_name = "N", hide = true)]
+    max_events: Option<usize>,
 }
 
-fn bench_insert_batch(c: &mut Criterion) {
-    let mut group = c.benchmark_group("ingest/insert_batch");
+/// Arguments for the `query` subcommand.
+#[derive(clap::Args, Debug)]
+struct QueryArgs {
+    /// Query expression (e.g. `level=error AND service=payments last 2h`).
+    query: String,
 
-    for &n in &[100usize, 1_000, 10_000] {
-        let lines = generate_lines(n);
-        let entries = parse_all(&lines);
-        group.throughput(Throughput::Elements(n as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(n), &entries, |b, entries| {
-            b.iter_batched(
-                || {
-                    // Per-sample setup: fresh temp dir, fresh DB, fresh indexer.
-                    // Excluded from the measurement window by iter_batched.
-                    let tmp = TempDir::new().expect("tempdir");
-                    let (indexer, _path) = fresh_indexer(&tmp);
-                    (tmp, indexer)
-                },
-                |(tmp, mut indexer)| {
-                    // Measured: the actual batched insert.
-                    let stats = indexer.insert_batch(entries).expect("insert batch");
-                    // Touch the stats so the optimizer can't eliminate them.
-                    assert_eq!(stats.inserted, entries.len());
-                    // Keep the tempdir alive until the closure ends so the
-                    // DB file isn't unlinked mid-measurement.
-                    drop(indexer);
-                    drop(tmp);
-                },
-                // LargeInput because the setup (fresh DB + parsed entries)
-                // is non-trivial; we want criterion to prefer fewer,
-                // larger-sample iterations to amortize setup cost.
-                BatchSize::LargeInput,
-            );
-        });
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
+    format: OutputFormat,
+
+    /// Maximum number of results to return. 0 means unlimited.
+    #[arg(long, default_value_t = 1000)]
+    limit: usize,
+}
+
+// ---------------------------------------------------------------------------
+// Clap value parser for LogFormat (keeps the clap dependency out of core)
+// ---------------------------------------------------------------------------
+
+fn parse_log_format(s: &str) -> std::result::Result<LogFormat, String> {
+    LogFormat::from_name(s)
+        .ok_or_else(|| format!("unknown format {s:?}; expected one of: json, logfmt, plain"))
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+fn main() {
+    init_tracing();
+    let cli = Cli::parse();
+    let db = db_path(cli.db.as_deref());
+
+    let result = match cli.command {
+        Command::Ingest(args) => handle_ingest(&db, args),
+        Command::Query(args) => handle_query(&db, args),
+        Command::Stats(args) => run_stats(&db, args),
+    };
+
+    if let Err(e) = result {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ingest
+// ---------------------------------------------------------------------------
+
+fn handle_ingest(db: &Path, args: IngestArgs) -> Result<()> {
+    // --follow guard: Unix only; --file is guaranteed by clap `requires`.
+    if args.follow {
+        #[cfg(not(unix))]
+        return Err(LogdiveError::IoBare(io::Error::other(
+            "--follow is only supported on Unix (Linux / macOS)",
+        )));
+
+        #[cfg(unix)]
+        {
+            let path = args
+                .file
+                .as_deref()
+                .expect("clap `requires = \"file\"` ensures --file is always set with --follow");
+            return run_watch_loop(path, db, &args);
+        }
     }
 
-    group.finish();
-}
+    // One-shot ingestion from --file or stdin.
+    let mut indexer = Indexer::open(db)?;
+    let mut total = InsertStats::default();
+    let mut malformed: usize = 0;
+    let is_tty = io::stderr().is_terminal();
 
-fn bench_parse_and_insert(c: &mut Criterion) {
-    // Variant that includes JSON parsing inside the measured region.
-    // Closer to what users actually see when they pipe logs into
-    // `logdive ingest`. Reported throughput is the end-to-end line rate.
-    let mut group = c.benchmark_group("ingest/parse_and_insert");
-
-    for &n in &[1_000usize, 10_000] {
-        let lines = generate_lines(n);
-        group.throughput(Throughput::Elements(n as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(n), &lines, |b, lines| {
-            b.iter_batched(
-                || {
-                    let tmp = TempDir::new().expect("tempdir");
-                    let (indexer, _path) = fresh_indexer(&tmp);
-                    (tmp, indexer)
-                },
-                |(tmp, mut indexer)| {
-                    // Measured: parse + batched insert.
-                    let entries: Vec<_> = lines
-                        .iter()
-                        .filter_map(|l| parse_line(LogFormat::Json, l))
-                        .collect();
-                    let stats = indexer.insert_batch(&entries).expect("insert");
-                    assert_eq!(stats.inserted, entries.len());
-                    drop(indexer);
-                    drop(tmp);
-                },
-                BatchSize::LargeInput,
-            );
-        });
+    if let Some(ref path) = args.file {
+        let file = std::fs::File::open(path).map_err(|e| LogdiveError::io_at(path, e))?;
+        let reader = io::BufReader::new(file);
+        ingest_reader(
+            reader,
+            &mut indexer,
+            &args,
+            &mut total,
+            &mut malformed,
+            is_tty,
+        )?;
+    } else {
+        let stdin = io::stdin();
+        let reader = stdin.lock();
+        ingest_reader(
+            reader,
+            &mut indexer,
+            &args,
+            &mut total,
+            &mut malformed,
+            is_tty,
+        )?;
     }
 
-    group.finish();
+    if is_tty {
+        // Move past the progress line.
+        eprintln!();
+    }
+    print_ingest_summary(total, malformed);
+    Ok(())
 }
 
-criterion_group!(benches, bench_insert_batch, bench_parse_and_insert);
-criterion_main!(benches);
+/// Read all lines from `reader`, parse them, and insert into the index.
+///
+/// Applies `--format`, `--timestamp-now`, and `--tag` exactly once per
+/// line, matching the one-shot ingest contract. Flushes any leftover
+/// partial batch at end of input.
+fn ingest_reader<R: BufRead>(
+    reader: R,
+    indexer: &mut Indexer,
+    args: &IngestArgs,
+    total: &mut InsertStats,
+    malformed: &mut usize,
+    is_tty: bool,
+) -> Result<()> {
+    const BATCH: usize = 1000;
+    let mut batch: Vec<LogEntry> = Vec::with_capacity(BATCH);
+
+    for line_result in reader.lines() {
+        let line = line_result.map_err(LogdiveError::IoBare)?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match parse_line(args.format, &line) {
+            Some(mut entry) => {
+                if entry.timestamp.is_none() && args.timestamp_now {
+                    entry.timestamp = Some(Utc::now().to_rfc3339());
+                }
+                entry = entry.with_tag(args.tag.clone());
+                batch.push(entry);
+
+                if batch.len() >= BATCH {
+                    let stats = indexer.insert_batch(&batch)?;
+                    accumulate(total, &stats);
+                    batch.clear();
+                    if is_tty {
+                        eprint!(
+                            "\r  {} ingested  {} dedup  {} skipped",
+                            total.inserted, total.deduplicated, total.skipped_no_timestamp
+                        );
+                    }
+                }
+            }
+            None => *malformed += 1,
+        }
+    }
+
+    // Flush the final partial batch.
+    if !batch.is_empty() {
+        let stats = indexer.insert_batch(&batch)?;
+        accumulate(total, &stats);
+    }
+    Ok(())
+}
+
+fn accumulate(total: &mut InsertStats, delta: &InsertStats) {
+    total.inserted += delta.inserted;
+    total.deduplicated += delta.deduplicated;
+    total.skipped_no_timestamp += delta.skipped_no_timestamp;
+}
+
+fn print_ingest_summary(stats: InsertStats, malformed: usize) {
+    eprintln!(
+        "ingested {}  dedup {}  no-timestamp {}  malformed {}",
+        stats.inserted, stats.deduplicated, stats.skipped_no_timestamp, malformed
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Follow / watch loop — Unix only
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+fn run_watch_loop(path: &Path, db: &Path, args: &IngestArgs) -> Result<()> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::Duration;
+
+    use notify::{RecursiveMode, Watcher, recommended_watcher};
+
+    use logdive_core::FileTailer;
+
+    let mut tailer = FileTailer::open(path)?;
+
+    // Channel carries raw notify results (errors + events alike).
+    let (tx, rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
+    let mut watcher = recommended_watcher(move |res| {
+        // Ignore send errors — they mean the receiver was dropped (shutdown).
+        let _ = tx.send(res);
+    })
+    .map_err(|e| LogdiveError::IoBare(io::Error::other(e.to_string())))?;
+
+    watcher
+        .watch(path, RecursiveMode::NonRecursive)
+        .map_err(|e| LogdiveError::IoBare(io::Error::other(e.to_string())))?;
+
+    // Shared stop flag. Ctrl-C handler sets it; main loop checks it.
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_clone = Arc::clone(&stop);
+    ctrlc::set_handler(move || stop_clone.store(true, Ordering::SeqCst))
+        .map_err(|e| LogdiveError::IoBare(io::Error::other(e.to_string())))?;
+
+    let mut indexer = Indexer::open(db)?;
+    let mut total = InsertStats::default();
+    let mut malformed: usize = 0;
+    let mut event_count: usize = 0;
+
+    eprintln!("following {} — Ctrl-C to stop", path.display());
+
+    while !stop.load(Ordering::SeqCst) {
+        match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(_event) => {
+                let lines = tailer.read_new_lines()?;
+                ingest_lines(&lines, &mut indexer, args, &mut total, &mut malformed)?;
+                event_count += 1;
+                if let Some(max) = args.max_events {
+                    if event_count >= max {
+                        break;
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                // Safety drain: deliver bytes that arrived without an event
+                // (can happen under heavy rotation or after a watcher hiccup).
+                let lines = tailer.read_new_lines()?;
+                if !lines.is_empty() {
+                    ingest_lines(&lines, &mut indexer, args, &mut total, &mut malformed)?;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    print_ingest_summary(total, malformed);
+    Ok(())
+}
+
+/// Parse and ingest a slice of log-line strings.
+///
+/// Mirrors `ingest_reader` but works on an already-split `&[String]` so
+/// the follow loop can call it without owning a reader.
+#[cfg(unix)]
+fn ingest_lines(
+    lines: &[String],
+    indexer: &mut Indexer,
+    args: &IngestArgs,
+    total: &mut InsertStats,
+    malformed: &mut usize,
+) -> Result<()> {
+    let mut batch: Vec<LogEntry> = Vec::with_capacity(lines.len());
+
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match parse_line(args.format, line) {
+            Some(mut entry) => {
+                if entry.timestamp.is_none() && args.timestamp_now {
+                    entry.timestamp = Some(Utc::now().to_rfc3339());
+                }
+                entry = entry.with_tag(args.tag.clone());
+                batch.push(entry);
+            }
+            None => *malformed += 1,
+        }
+    }
+
+    if !batch.is_empty() {
+        let stats = indexer.insert_batch(&batch)?;
+        accumulate(total, &stats);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// query
+// ---------------------------------------------------------------------------
+
+fn handle_query(db: &Path, args: QueryArgs) -> Result<()> {
+    let ast = parse_query(&args.query)?;
+    let limit = match args.limit {
+        0 => None,
+        n => Some(n),
+    };
+
+    let indexer = Indexer::open(db)?;
+    let entries = execute(&ast, indexer.connection(), limit)?;
+    render(&entries, args.format)
+}
+
+// ---------------------------------------------------------------------------
+// Tracing initialisation
+// ---------------------------------------------------------------------------
+
+fn init_tracing() {
+    let filter = EnvFilter::try_from_env("LOGDIVE_LOG").unwrap_or_else(|_| EnvFilter::new("warn"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(io::stderr)
+        .init();
+}
