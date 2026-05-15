@@ -1,9 +1,12 @@
-//! Axum handlers for the two public endpoints.
+//! Axum handlers for the three public endpoints.
 //!
-//! Both handlers are async, but every one of them delegates the actual
-//! SQLite work to [`AppState::with_connection`] which runs on Tokio's
-//! blocking-task pool. The handlers themselves do parsing, parameter
-//! validation, and response shaping — nothing else.
+//! All handlers are async, but every one that touches the database
+//! delegates SQLite work to [`AppState::with_connection`], which runs on
+//! Tokio's blocking-task pool. The handlers themselves do parsing,
+//! parameter validation, and response shaping — nothing else.
+//!
+//! `GET /version` is the exception: it returns compile-time constants only
+//! and never opens the database.
 
 use axum::{
     Json,
@@ -13,7 +16,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use logdive_core::{LogEntry, Stats, execute, parse_query};
+use logdive_core::{LogEntry, LogFormat, Stats, execute, parse_query};
 
 use crate::error::AppError;
 use crate::state::AppState;
@@ -181,6 +184,42 @@ pub async fn stats_handler(State(state): State<AppState>) -> Result<Json<StatsRe
 }
 
 // ---------------------------------------------------------------------------
+// GET /version
+// ---------------------------------------------------------------------------
+
+/// Wire shape for `GET /version` responses.
+///
+/// All fields are compile-time constants — no database access is required.
+/// The primary use case is client-side feature detection: a UI or script
+/// calls `/version` on startup to discover which formats and endpoints the
+/// running server supports before making assumptions about its capabilities.
+#[derive(Debug, Serialize)]
+pub struct VersionResponse {
+    /// Semver version of the running `logdive-api` binary, injected from
+    /// `CARGO_PKG_VERSION` at compile time.
+    pub version: &'static str,
+    /// Ingest formats the binary was compiled with, sourced from
+    /// [`LogFormat::ALL`]. Stays in sync with core without manual
+    /// maintenance — adding a new format to core propagates here for free.
+    pub formats: Vec<&'static str>,
+    /// API endpoint names available on this server, sorted alphabetically.
+    pub capabilities: Vec<&'static str>,
+}
+
+/// `GET /version`
+///
+/// Returns a JSON object describing the running server's version and
+/// capabilities. Built entirely from compile-time constants; never touches
+/// the database. Always returns `200 OK`.
+pub async fn version_handler() -> Json<VersionResponse> {
+    Json(VersionResponse {
+        version: env!("CARGO_PKG_VERSION"),
+        formats: LogFormat::ALL.iter().map(|f| f.name()).collect(),
+        capabilities: vec!["query", "stats", "version"],
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -277,5 +316,49 @@ mod tests {
     fn build_ndjson_response_is_ok_for_empty_results() {
         let resp = build_ndjson_response(&[]);
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ----- GET /version ------------------------------------------------
+
+    #[tokio::test]
+    async fn version_handler_returns_current_package_version() {
+        let Json(resp) = version_handler().await;
+        assert_eq!(resp.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[tokio::test]
+    async fn version_handler_formats_match_logformat_all() {
+        let Json(resp) = version_handler().await;
+        let expected: Vec<&'static str> = LogFormat::ALL.iter().map(|f| f.name()).collect();
+        assert_eq!(resp.formats, expected);
+    }
+
+    #[tokio::test]
+    async fn version_handler_capabilities_are_sorted_and_complete() {
+        let Json(resp) = version_handler().await;
+        assert_eq!(resp.capabilities, vec!["query", "stats", "version"]);
+        // Guard: the list must stay sorted — future additions must maintain this.
+        let mut sorted = resp.capabilities.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            resp.capabilities, sorted,
+            "capabilities must be sorted alphabetically"
+        );
+    }
+
+    #[test]
+    fn version_response_serializes_to_expected_json_shape() {
+        let resp = VersionResponse {
+            version: "0.2.0",
+            formats: vec!["json", "logfmt", "plain"],
+            capabilities: vec!["query", "stats", "version"],
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["version"], "0.2.0");
+        assert_eq!(v["formats"], serde_json::json!(["json", "logfmt", "plain"]));
+        assert_eq!(
+            v["capabilities"],
+            serde_json::json!(["query", "stats", "version"])
+        );
     }
 }

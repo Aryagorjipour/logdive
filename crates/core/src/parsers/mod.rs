@@ -40,6 +40,15 @@ pub enum LogFormat {
 }
 
 impl LogFormat {
+    /// Every [`LogFormat`] variant, in declaration order.
+    ///
+    /// Use this when you need to enumerate all supported formats without
+    /// hard-coding the list at a call site — for example, the API
+    /// `/version` endpoint reports this slice so clients know what the
+    /// running binary accepts. Adding a new variant here automatically
+    /// propagates to every such consumer.
+    pub const ALL: &'static [Self] = &[Self::Json, Self::Logfmt, Self::Plain];
+
     /// Parse a CLI-style format name. Case-insensitive.
     ///
     /// Returns `None` for unrecognized names. The CLI wraps this in a
@@ -134,6 +143,24 @@ mod tests {
         assert_eq!(format!("{}", LogFormat::Json), "json");
         assert_eq!(format!("{}", LogFormat::Logfmt), "logfmt");
         assert_eq!(format!("{}", LogFormat::Plain), "plain");
+    }
+
+    // ----- ALL const ---------------------------------------------------
+
+    #[test]
+    fn all_contains_every_variant() {
+        assert_eq!(LogFormat::ALL.len(), 3);
+        assert!(LogFormat::ALL.contains(&LogFormat::Json));
+        assert!(LogFormat::ALL.contains(&LogFormat::Logfmt));
+        assert!(LogFormat::ALL.contains(&LogFormat::Plain));
+    }
+
+    #[test]
+    fn all_names_round_trip_through_from_name() {
+        // LogFormat: Copy, so *format is fine when iterating &[LogFormat].
+        for format in LogFormat::ALL {
+            assert_eq!(LogFormat::from_name(format.name()), Some(*format));
+        }
     }
 
     // ----- Dispatcher routing -------------------------------------------
