@@ -1,8 +1,9 @@
 //! `logdive-api` binary entry point.
 //!
 //! Reads configuration from command-line flags (with environment-variable
-//! fallbacks), fails fast if the configured index does not exist, then
-//! hands the built router to `axum::serve` with graceful-shutdown wiring.
+//! fallbacks), ensures the index exists (creating an empty one on first
+//! run if needed), then hands the built router to `axum::serve` with
+//! graceful-shutdown wiring.
 //!
 //! The actual HTTP surface lives in the `logdive_api` library half of
 //! this crate — see `lib.rs` for the module map.
@@ -16,7 +17,7 @@ use tracing_subscriber::EnvFilter;
 
 use logdive_api::router::build_router;
 use logdive_api::state::AppState;
-use logdive_core::{LogdiveError, Result, db_path};
+use logdive_core::{Indexer, LogdiveError, Result, db_path};
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -89,19 +90,15 @@ async fn main() -> Result<()> {
     // behavior is consistent across the two surfaces.
     let db = db_path(cli.db.as_deref());
 
-    // Fail fast: no point starting a server that will 500 on every request
-    // because the underlying file is absent. Typos surface here rather
-    // than as a flurry of client-side errors.
-    if !db.exists() {
-        let msg = format!(
-            "no index found at {}; run `logdive ingest` to create one first",
-            db.display()
-        );
-        return Err(LogdiveError::io_at(
-            &db,
-            std::io::Error::new(std::io::ErrorKind::NotFound, msg),
-        ));
-    }
+    // Ensure the index exists. On first run (e.g. a fresh Docker volume or a
+    // new installation) the file is absent — in that case we create an empty
+    // index with the correct schema so the server starts cleanly and returns
+    // zero results until logs are ingested.
+    //
+    // This preserves the "fail fast" property for genuinely bad paths:
+    // a wrong directory or permission error surfaces here as a startup
+    // failure rather than as a flurry of 500s per request.
+    ensure_index_exists(&db)?;
 
     // Build state and router.
     let state = AppState::new(db.clone());
@@ -152,6 +149,49 @@ async fn main() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Index bootstrap
+// ---------------------------------------------------------------------------
+
+/// Ensure the index file exists, creating an empty one if it does not.
+///
+/// Creating the parent directory first handles the common Docker case where
+/// `/data` is a freshly mounted named volume that contains no files yet.
+///
+/// If the path is genuinely wrong — a non-existent ancestor directory that
+/// cannot be created, a permission-denied path, a file that exists but is
+/// not a valid SQLite database — this function returns an error, which
+/// surfaces as a startup failure with a clear message rather than as a
+/// request-time 500.
+fn ensure_index_exists(db: &std::path::Path) -> Result<()> {
+    if db.exists() {
+        return Ok(());
+    }
+
+    // Create parent directories (e.g. /data when a fresh Docker volume is
+    // mounted — the directory exists but may be empty, or the default
+    // ~/.logdive/ on a first-run host install).
+    if let Some(parent) = db.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| LogdiveError::io_at(db, e))?;
+        }
+    }
+
+    // Open in read-write mode to initialise the schema, then drop
+    // immediately. All subsequent query-time access uses open_read_only.
+    let _ = Indexer::open(db)?;
+
+    tracing::info!(path = %db.display(), "created empty index at startup");
+    eprintln!(
+        "logdive-api: no index found at {path} — created an empty one. \
+         Ingest logs with: logdive ingest <file>  \
+         (or: docker run --entrypoint logdive ... ingest <file>)",
+        path = db.display(),
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // CORS origin parsing
 // ---------------------------------------------------------------------------
 
@@ -194,8 +234,6 @@ fn parse_cors_origins(raw: Option<String>) -> std::result::Result<Vec<HeaderValu
                     .to_string(),
             );
         }
-        // Use from_static rather than from_str so the byte sequence is
-        // guaranteed to match the `b"*"` check in `build_cors_layer`.
         return Ok(vec![HeaderValue::from_static("*")]);
     }
 
@@ -226,8 +264,6 @@ fn cors_summary(origins: &[HeaderValue]) -> String {
 // ---------------------------------------------------------------------------
 
 fn init_tracing() {
-    // Match the CLI's default so users have one consistent knob across
-    // both surfaces. LOGDIVE_LOG=debug reveals query execution details.
     let filter = EnvFilter::try_from_env("LOGDIVE_LOG").unwrap_or_else(|_| EnvFilter::new("warn"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -283,6 +319,50 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ----- ensure_index_exists -------------------------------------------
+
+    #[test]
+    fn ensure_index_exists_creates_db_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("new.db");
+        assert!(!db.exists());
+        ensure_index_exists(&db).expect("should create db");
+        assert!(db.exists(), "db file must exist after ensure_index_exists");
+    }
+
+    #[test]
+    fn ensure_index_exists_is_idempotent_when_db_already_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("existing.db");
+        let _ = Indexer::open(&db).unwrap();
+        // Second call must succeed without overwriting the file.
+        ensure_index_exists(&db).expect("should succeed on existing db");
+        assert!(db.exists());
+    }
+
+    #[test]
+    fn ensure_index_exists_creates_parent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("nested").join("dirs").join("index.db");
+        assert!(!db.parent().unwrap().exists());
+        ensure_index_exists(&db).expect("should create parent dirs and db");
+        assert!(db.exists());
+    }
+
+    #[test]
+    fn ensure_index_exists_created_db_is_queryable() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("queryable.db");
+        ensure_index_exists(&db).unwrap();
+        // Open read-only (as AppState does) and run stats — must return zero,
+        // not a schema error.
+        let idx = Indexer::open_read_only(&db).expect("open_read_only on created db");
+        let stats = idx.stats().expect("stats on empty db");
+        assert_eq!(stats.entries, 0);
+    }
+
+    // ----- parse_cors_origins --------------------------------------------
 
     #[test]
     fn parse_cors_origins_none_returns_empty() {
@@ -353,7 +433,6 @@ mod tests {
 
     #[test]
     fn parse_cors_origins_invalid_header_value_is_error() {
-        // Newline characters are forbidden in header values.
         let err = parse_cors_origins(Some("https://ok.com,bad\nvalue".to_string())).unwrap_err();
         assert!(
             err.contains("bad\nvalue") || err.contains("bad"),

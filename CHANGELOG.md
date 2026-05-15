@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **M6 — Docker image + multi-arch**
+  - Multi-stage `Dockerfile` (cargo-chef caching, `debian:bookworm-slim`
+    runtime) publishing both `logdive` and `logdive-api` binaries in a
+    single image.
+  - Default `ENTRYPOINT ["logdive-api"]`; CLI accessible via
+    `--entrypoint logdive`.
+  - `ENV LOGDIVE_DB=/data/index.db` and `ENV LOGDIVE_API_HOST=0.0.0.0`
+    set sane container defaults without modifying binary source.
+  - `VOLUME ["/data"]` and `EXPOSE 4000` declared.
+  - `HEALTHCHECK` on `GET /version` (30 s interval, 3 s timeout, 5 s
+    start period).
+  - Non-root system user `logdive` (UID/GID 1000).
+  - GitHub Actions workflow (`.github/workflows/docker.yml`): `linux/amd64`
+    + `linux/arm64` via `docker buildx` + QEMU; GHA cache (`type=gha`,
+      mode=max) for BuildKit layers; GHCR push via `GITHUB_TOKEN` (no PAT);
+      semver tags on `v*` push, branch tags on `main`/`release/v*`, build-only
+      on PRs.
+
 - **M5 — API capability endpoints + CORS**
   - `GET /version` endpoint on `logdive-api` returning `version`,
     `formats` (ingest formats the binary was compiled with), and
