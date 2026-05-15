@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-15
+
 ### Added
 
 - **M6 — Docker image + multi-arch**
@@ -18,14 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `ENV LOGDIVE_DB=/data/index.db` and `ENV LOGDIVE_API_HOST=0.0.0.0`
     set sane container defaults without modifying binary source.
   - `VOLUME ["/data"]` and `EXPOSE 4000` declared.
-  - `HEALTHCHECK` on `GET /version` (30 s interval, 3 s timeout, 5 s
-    start period).
+  - `HEALTHCHECK` on `GET /version` (30 s interval, 5 s start period).
   - Non-root system user `logdive` (UID/GID 1000).
   - GitHub Actions workflow (`.github/workflows/docker.yml`): `linux/amd64`
     + `linux/arm64` via `docker buildx` + QEMU; GHA cache (`type=gha`,
-      mode=max) for BuildKit layers; GHCR push via `GITHUB_TOKEN` (no PAT);
-      semver tags on `v*` push, branch tags on `main`/`release/v*`, build-only
-      on PRs.
+      `mode=min`) for BuildKit layers; GHCR push via `GITHUB_TOKEN` (no PAT);
+      semver tags on `v*` push, branch tags on `main`/`release/v*`,
+      build-only (no cache write) on PRs.
+  - `logdive-api` auto-creates an empty index with initialized schema on
+    first run when the database file is absent, including any missing parent
+    directories. Genuinely bad paths still surface as startup failures.
 
 - **M5 — API capability endpoints + CORS**
   - `GET /version` endpoint on `logdive-api` returning `version`,
@@ -40,8 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tower-http` `CorsLayer` wired into the router when origins are
     configured; GET-only, no credentials, preflight handled automatically.
   - `LogFormat::ALL` const on `logdive-core`'s `LogFormat` enum exposing
-    all supported ingest format variants — used by `/version` and available
-    to any downstream consumer.
+    all supported ingest format variants.
 
 - **M4 — `prune` subcommand + `LOGDIVE_DB` env var**
   - `logdive prune` subcommand removes entries older than a given duration
@@ -50,8 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     required.
   - Interactive `[y/N]` confirmation by default (shows the row count to be
     deleted); `--yes` bypasses.
-  - `LOGDIVE_DB` environment variable accepted on the global `--db` flag;
-    CLI flag takes precedence when both are provided.
+  - `LOGDIVE_DB` environment variable accepted on the global `--db` flag
+    for both `logdive` and `logdive-api`; CLI flag takes precedence when
+    both are provided.
 
 - **M3 — Follow mode**
   - `logdive ingest --follow` tails a file for new lines, similar to
@@ -79,13 +83,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `level=error OR level=warn`.
   - `AND` binds tighter than `OR`; SQL generation always parenthesises
     each AND-group: `WHERE (a=? AND b=?) OR (c=?)`.
-  - Breaking change to `QueryNode`: replaced `And(Vec<Clause>)` with
-    `Or(Vec<AndGroup>)` where `AndGroup { clauses: Vec<Clause> }`.
 
 ### Changed
 
 - `build_router` in `logdive-api` gains a `cors_origins: Vec<HeaderValue>`
-  parameter. Integration tests updated to pass `vec![]` (CORS disabled).
+  parameter (M5). Integration tests updated to pass `vec![]` (CORS disabled).
+
+### Breaking (library)
+
+- `QueryNode::And(Vec<Clause>)` replaced by `QueryNode::Or(Vec<AndGroup>)`
+  where `AndGroup { clauses: Vec<Clause> }` (M1). Even single-clause
+  queries are wrapped in the two-level structure.
+- `parse_line` signature changed from `(line: &str)` to
+  `(format: LogFormat, line: &str)` (M2).
 
 ## [0.1.0] - 2026-04-19
 
