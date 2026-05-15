@@ -79,7 +79,7 @@ fn entry(ts: &str, level: &str, message: &str, tag: Option<&str>) -> LogEntry {
 }
 
 fn app(db: PathBuf) -> axum::Router {
-    build_router(AppState::new(db))
+    build_router(AppState::new(db), vec![])
 }
 
 async fn body_bytes(resp: axum::response::Response) -> Vec<u8> {
