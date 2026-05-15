@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tempfile::TempDir;
 
-use logdive_core::{Indexer, parse_line};
+use logdive_core::{Indexer, LogFormat, parse_line};
 
 /// Generate `n` synthetic JSON log lines. Deterministic — same `n`
 /// produces the same output across runs and machines.
@@ -55,7 +55,10 @@ fn generate_lines(n: usize) -> Vec<String> {
 /// the parser (which has its own implicit coverage via integration
 /// tests). A separate parse-only benchmark would be additive later.
 fn parse_all(lines: &[String]) -> Vec<logdive_core::LogEntry> {
-    lines.iter().filter_map(|l| parse_line(l)).collect()
+    lines
+        .iter()
+        .filter_map(|l| parse_line(LogFormat::Json, l))
+        .collect()
 }
 
 /// Open a fresh on-disk `Indexer` under the given temp directory.
@@ -124,7 +127,10 @@ fn bench_parse_and_insert(c: &mut Criterion) {
                 },
                 |(tmp, mut indexer)| {
                     // Measured: parse + batched insert.
-                    let entries: Vec<_> = lines.iter().filter_map(|l| parse_line(l)).collect();
+                    let entries: Vec<_> = lines
+                        .iter()
+                        .filter_map(|l| parse_line(LogFormat::Json, l))
+                        .collect();
                     let stats = indexer.insert_batch(&entries).expect("insert");
                     assert_eq!(stats.inserted, entries.len());
                     drop(indexer);

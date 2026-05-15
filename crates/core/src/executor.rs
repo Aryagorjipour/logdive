@@ -11,6 +11,22 @@
 //! `validate_field_name`'s strict regex in the parser, which we
 //! defensively re-check at the executor boundary.
 //!
+//! # Disjunction (OR) shape
+//!
+//! v0.2.0 introduced OR. The AST is `QueryNode::Or(Vec<AndGroup>)` where
+//! each [`AndGroup`] is a conjunction of clauses. The SQL we emit
+//! parenthesizes each AND-group and joins them with ` OR `:
+//!
+//! ```sql
+//! WHERE (level = ? AND json_extract(fields, '$.service') = ?)
+//!    OR (level = ?)
+//! ```
+//!
+//! For queries with no OR (a single AND-group), the parens are still
+//! emitted — the alternative is a special-case branch in the SQL
+//! builder that adds maintenance cost without performance benefit.
+//! SQLite's planner ignores redundant parens.
+//!
 //! # Timestamp handling
 //!
 //! Timestamps are compared as TEXT, which works correctly for any ISO-8601
@@ -25,7 +41,7 @@ use serde_json::{Map, Value};
 
 use crate::entry::LogEntry;
 use crate::error::{LogdiveError, Result};
-use crate::query::{Clause, Duration, QueryNode, QueryValue};
+use crate::query::{AndGroup, Clause, Duration, QueryNode, QueryValue};
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -72,23 +88,27 @@ fn build_sql(
     limit: Option<usize>,
     now: DateTime<Utc>,
 ) -> Result<(String, Vec<Bind>)> {
-    let QueryNode::And(clauses) = query;
+    let QueryNode::Or(groups) = query;
 
-    let mut where_parts: Vec<String> = Vec::with_capacity(clauses.len());
-    let mut binds: Vec<Bind> = Vec::with_capacity(clauses.len());
+    // The parser guarantees at least one AND-group, and each AND-group has
+    // at least one clause. Treat both invariants defensively here so a bug
+    // upstream produces a recognizable runtime shape rather than a SQL
+    // syntax error from an empty `WHERE` clause.
+    let mut group_sqls: Vec<String> = Vec::with_capacity(groups.len());
+    let mut binds: Vec<Bind> = Vec::new();
 
-    for clause in clauses {
-        let (sql, mut clause_binds) = translate_clause(clause, now)?;
-        where_parts.push(sql);
-        binds.append(&mut clause_binds);
+    for group in groups {
+        let (group_sql, mut group_binds) = translate_and_group(group, now)?;
+        group_sqls.push(group_sql);
+        binds.append(&mut group_binds);
     }
 
-    let where_sql = if where_parts.is_empty() {
-        // Can't happen with a valid QueryNode (parser guarantees at least
-        // one clause), but handle it to keep this function total.
+    let where_sql = if group_sqls.is_empty() {
+        // Defensive: should be unreachable given the parser contract.
         "1=1".to_string()
     } else {
-        where_parts.join(" AND ")
+        // ` OR ` between groups, each already parenthesized.
+        group_sqls.join(" OR ")
     };
 
     let mut sql = format!(
@@ -101,6 +121,30 @@ fn build_sql(
         sql.push_str(&format!(" LIMIT {n}"));
     }
     Ok((sql, binds))
+}
+
+/// Translate one AND-group into a parenthesized SQL fragment and the
+/// associated bind values, in clause-declaration order.
+///
+/// Always parenthesizes — including the single-clause case. Uniformity in
+/// the SQL emitter outweighs prettiness in the rare query-debugger view.
+fn translate_and_group(group: &AndGroup, now: DateTime<Utc>) -> Result<(String, Vec<Bind>)> {
+    let mut clause_sqls: Vec<String> = Vec::with_capacity(group.clauses.len());
+    let mut binds: Vec<Bind> = Vec::new();
+
+    for clause in &group.clauses {
+        let (sql, mut clause_binds) = translate_clause(clause, now)?;
+        clause_sqls.push(sql);
+        binds.append(&mut clause_binds);
+    }
+
+    let inner = if clause_sqls.is_empty() {
+        // Defensive: parser guarantees non-empty AND-groups.
+        "1=1".to_string()
+    } else {
+        clause_sqls.join(" AND ")
+    };
+    Ok((format!("({inner})"), binds))
 }
 
 fn translate_clause(clause: &Clause, now: DateTime<Utc>) -> Result<(String, Vec<Bind>)> {
@@ -317,13 +361,29 @@ mod tests {
         idx
     }
 
-    // --- SQL generation (inspection) ---
+    /// Three-row fixture covering levels error/warn/info across two services.
+    /// Used by OR-specific round-trip tests where we want at least one row
+    /// per level to exercise multi-group disjunction.
+    fn three_level_fixture() -> Indexer {
+        let mut idx = Indexer::open_in_memory().unwrap();
+        let a = make_entry("2026-04-20T09:00:00Z", "error", "boom");
+        let b = make_entry("2026-04-20T10:00:00Z", "warn", "slow query");
+        let c = make_entry("2026-04-20T11:00:00Z", "info", "ok");
+        idx.insert_batch(&[a, b, c]).unwrap();
+        idx
+    }
+
+    // -----------------------------------------------------------------
+    // SQL generation (inspection) — single AND-group cases (no OR)
+    // -----------------------------------------------------------------
 
     #[test]
     fn compare_on_known_field_binds_value_not_interpolates() {
         let ast = parse("level=error").unwrap();
         let (sql, binds) = build_sql(&ast, None, Utc::now()).unwrap();
-        assert!(sql.contains("WHERE level = ?"));
+        // Always-parenthesized invariant: even single-clause queries are
+        // wrapped in parens.
+        assert!(sql.contains("WHERE (level = ?)"));
         assert!(!sql.contains("error"));
         assert_eq!(binds.len(), 1);
         match &binds[0] {
@@ -402,12 +462,16 @@ mod tests {
     }
 
     #[test]
-    fn and_chain_joins_with_and_and_preserves_bind_order() {
+    fn and_chain_joins_with_and_inside_a_single_group() {
         let ast = parse("level=error AND service=payments").unwrap();
         let (sql, binds) = build_sql(&ast, None, Utc::now()).unwrap();
         assert!(sql.contains("level = ?"));
         assert!(sql.contains("json_extract(fields, '$.service') = ?"));
+        // AND inside a single parenthesized group, no OR.
         assert!(sql.contains(" AND "));
+        assert!(!sql.contains(" OR "));
+        // Always-parenthesized invariant.
+        assert!(sql.contains("WHERE (level = ? AND json_extract(fields, '$.service') = ?)"));
         assert_eq!(binds.len(), 2);
         match (&binds[0], &binds[1]) {
             (SqlValue::Text(a), SqlValue::Text(b)) => {
@@ -456,7 +520,114 @@ mod tests {
         assert!(sql.ends_with("LIMIT 50"));
     }
 
-    // --- Round-trip: insert, query, assert results ---
+    // -----------------------------------------------------------------
+    // SQL generation — OR cases (new in v0.2.0)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn or_emits_two_parenthesized_groups_joined_by_or() {
+        let ast = parse("level=error OR level=warn").unwrap();
+        let (sql, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        // Two parenthesized AND-groups joined by ` OR `.
+        assert!(sql.contains("WHERE (level = ?) OR (level = ?)"));
+        // Bind order matches clause order across the OR boundary.
+        match (&binds[0], &binds[1]) {
+            (SqlValue::Text(a), SqlValue::Text(b)) => {
+                assert_eq!(a, "error");
+                assert_eq!(b, "warn");
+            }
+            other => panic!("unexpected binds: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn or_with_three_groups_joins_with_two_or_keywords() {
+        let ast = parse("level=error OR level=warn OR level=fatal").unwrap();
+        let (sql, _binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        // Exactly two ` OR ` separators between three groups.
+        assert_eq!(sql.matches(" OR ").count(), 2);
+        // All three values appear bound (we rely on the matches above
+        // for the count; spot-check shape here).
+        assert!(sql.contains("(level = ?) OR (level = ?) OR (level = ?)"));
+    }
+
+    #[test]
+    fn or_with_and_inside_each_group_emits_correct_shape() {
+        // (level=error AND service=payments) OR (level=warn)
+        let ast = parse("level=error AND service=payments OR level=warn").unwrap();
+        let (sql, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        assert!(sql.contains(
+            "WHERE (level = ? AND json_extract(fields, '$.service') = ?) OR (level = ?)"
+        ));
+        // Bind order: error, payments, warn — preserved across OR.
+        assert_eq!(binds.len(), 3);
+        match (&binds[0], &binds[1], &binds[2]) {
+            (SqlValue::Text(a), SqlValue::Text(b), SqlValue::Text(c)) => {
+                assert_eq!(a, "error");
+                assert_eq!(b, "payments");
+                assert_eq!(c, "warn");
+            }
+            other => panic!("unexpected binds: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn or_with_and_on_both_sides_preserves_bind_ordering() {
+        // (a=1 AND b=2) OR (c=3 AND d=4) — exercises bind ordering across
+        // OR boundary with mixed integer values.
+        let ast = parse("a=1 AND b=2 OR c=3 AND d=4").unwrap();
+        let (sql, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        assert_eq!(sql.matches(" OR ").count(), 1);
+        assert_eq!(binds.len(), 4);
+        match (&binds[0], &binds[1], &binds[2], &binds[3]) {
+            (
+                SqlValue::Integer(a),
+                SqlValue::Integer(b),
+                SqlValue::Integer(c),
+                SqlValue::Integer(d),
+            ) => {
+                assert_eq!(*a, 1);
+                assert_eq!(*b, 2);
+                assert_eq!(*c, 3);
+                assert_eq!(*d, 4);
+            }
+            other => panic!("unexpected binds: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn or_with_mixed_clause_kinds_in_each_group() {
+        // level=error OR message contains "timeout" OR last 30m
+        // Three groups, each with a different kind of clause.
+        let ast = parse(r#"level=error OR message contains "timeout" OR last 30m"#).unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 4, 20, 12, 0, 0).unwrap();
+        let (sql, binds) = build_sql(&ast, None, now).unwrap();
+        assert_eq!(sql.matches(" OR ").count(), 2);
+        assert_eq!(binds.len(), 3);
+
+        // Group 1: text bind for the level value.
+        assert!(matches!(&binds[0], SqlValue::Text(s) if s == "error"));
+        // Group 2: text bind with %timeout% LIKE pattern.
+        assert!(matches!(&binds[1], SqlValue::Text(s) if s == "%timeout%"));
+        // Group 3: text bind with the cutoff timestamp.
+        match &binds[2] {
+            SqlValue::Text(s) => assert!(s.starts_with("2026-04-20T11:30:00")),
+            other => panic!("expected text cutoff, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn limit_applies_to_or_query_too() {
+        let ast = parse("level=error OR level=warn").unwrap();
+        let (sql, _) = build_sql(&ast, Some(25), Utc::now()).unwrap();
+        assert!(sql.ends_with("LIMIT 25"));
+        // LIMIT is outside the WHERE clause.
+        assert!(sql.contains(" ORDER BY "));
+    }
+
+    // -----------------------------------------------------------------
+    // Round-trip: insert, query (without OR), assert results
+    // -----------------------------------------------------------------
 
     #[test]
     fn round_trip_known_field_equality() {
@@ -571,7 +742,111 @@ mod tests {
         assert_eq!(e.fields.get("req_id").and_then(|v| v.as_i64()), Some(100));
     }
 
-    // --- Safety guards ---
+    // -----------------------------------------------------------------
+    // Round-trip: OR queries (new in v0.2.0)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn round_trip_or_two_groups_returns_union() {
+        let idx = three_level_fixture();
+        let rows = run_query(idx.connection(), "level=error OR level=warn");
+        assert_eq!(rows.len(), 2);
+
+        let levels: HashSet<String> = rows
+            .iter()
+            .map(|e| e.level.clone().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            levels,
+            HashSet::from(["error".to_string(), "warn".to_string()])
+        );
+    }
+
+    #[test]
+    fn round_trip_or_three_groups_returns_full_union() {
+        let idx = three_level_fixture();
+        let rows = run_query(idx.connection(), "level=error OR level=warn OR level=info");
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn round_trip_or_does_not_double_count_overlapping_rows() {
+        // A row matched by both groups must appear once (SQL OR is set
+        // union over candidate rows in the WHERE evaluation, but each
+        // row is yielded once because the FROM is a single table).
+        let idx = three_level_fixture();
+        // Both clauses match the error row.
+        let rows = run_query(
+            idx.connection(),
+            r#"level=error OR message contains "boom""#,
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].level.as_deref(), Some("error"));
+    }
+
+    #[test]
+    fn round_trip_or_respects_and_precedence() {
+        // (level=error AND service=payments) OR level=warn
+        // Fixture has one error row with service=payments, one error
+        // row with service=users, one info row, no warn rows.
+        // Adding a warn row to the fixture so the OR side has a match.
+        let mut idx = fixture();
+        let mut warn = make_entry("2026-04-20T13:00:00Z", "warn", "almost full");
+        warn.fields
+            .insert("service".into(), Value::String("orders".into()));
+        warn.fields.insert("req_id".into(), Value::from(400));
+        idx.insert_batch(&[warn]).unwrap();
+
+        let rows = run_query(
+            idx.connection(),
+            "level=error AND service=payments OR level=warn",
+        );
+        // One error/payments row + one warn row = 2.
+        assert_eq!(rows.len(), 2);
+        let messages: HashSet<String> = rows
+            .iter()
+            .map(|e| e.message.clone().unwrap_or_default())
+            .collect();
+        assert!(messages.contains("payment failed"));
+        assert!(messages.contains("almost full"));
+    }
+
+    #[test]
+    fn round_trip_or_with_time_range() {
+        // "Errors any time, OR anything in the last hour" is a real-
+        // world disjunction shape.
+        let idx = fixture();
+        let now = Utc.with_ymd_and_hms(2026, 4, 20, 12, 30, 0).unwrap();
+        let rows = run_query_at(idx.connection(), "level=error OR last 30m", now);
+        // The two error rows + the one row in the last 30m (12:00 row).
+        // The 12:00 row is also an error row, so dedup yields 2.
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn round_trip_or_yields_results_ordered_newest_first() {
+        // Ordering must be applied across the union, not within each group.
+        let idx = three_level_fixture();
+        let rows = run_query(idx.connection(), "level=error OR level=info");
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].timestamp > rows[1].timestamp);
+        // Newest is the info row at 11:00, oldest is the error at 09:00.
+        assert_eq!(rows[0].level.as_deref(), Some("info"));
+        assert_eq!(rows[1].level.as_deref(), Some("error"));
+    }
+
+    #[test]
+    fn round_trip_or_with_zero_matches_in_one_group_still_returns_other() {
+        let idx = three_level_fixture();
+        // First group matches nothing, second matches one row.
+        let rows = run_query(idx.connection(), "level=fatal OR level=warn");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].level.as_deref(), Some("warn"));
+    }
+
+    // -----------------------------------------------------------------
+    // Safety guards
+    // -----------------------------------------------------------------
 
     #[test]
     fn unsafe_field_name_is_rejected_at_executor() {

@@ -1,0 +1,37 @@
+# ── Version control ───────────────────────────────────────────────────────────
+.git
+.gitignore
+.gitattributes
+
+# ── Build artefacts ───────────────────────────────────────────────────────────
+# The target/ directory is the single largest exclusion: it can be several
+# gigabytes and is never needed inside the Docker build context.
+target/
+
+# ── Development tooling ───────────────────────────────────────────────────────
+.cargo/
+.rust-analyzer.json
+rust-project.json
+
+# ── CI / infra ────────────────────────────────────────────────────────────────
+.github/
+.dockerignore
+Dockerfile
+
+# ── Documentation and examples ───────────────────────────────────────────────
+# Excluding these keeps the build context lean; they are not needed to compile
+# the workspace.
+docs/
+examples/
+benchmarks/
+*.md
+!crates/*/README.md
+
+# ── IDE / editor ─────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.iml
+
+# ── OS noise ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

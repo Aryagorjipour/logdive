@@ -1,56 +1,51 @@
-//! `logdive` CLI entry point.
+//! `logdive` CLI binary.
 //!
-//! Milestones wired up:
-//!   - m6: `ingest` — read structured JSON logs from a file or stdin,
-//!     parse, and insert batched entries into the index.
-//!   - m7: `query` — parse a query string, run it against the index,
-//!     and render matching entries to stdout in `pretty` or `json`
-//!     form.
-//!   - m7: `stats` — report aggregate metadata about the index.
+//! Four subcommands: `ingest`, `query`, `stats`, `prune`. A global `--db`
+//! flag selects the index path; all subcommands respect it. The flag also
+//! reads the `LOGDIVE_DB` environment variable as a fallback, matching the
+//! `logdive-api` binary — the command-line value wins when both are set.
 //!
-//! Database-opening policy is per-subcommand rather than hoisted into
-//! `run()`: `ingest` and `query` create the index file as needed (the
-//! user expects to be able to ingest into a fresh DB, or query one
-//! they've just created), while `stats` refuses to run against a
-//! non-existent path so typos in `--db` surface as errors rather than
-//! misleading zero-entry readouts.
+//! # Changes in v0.2.0
+//!
+//! - `--format json|logfmt|plain` on `ingest` (M2: multi-format ingestion).
+//! - `--timestamp-now` on `ingest` (M2: universal fallback timestamp).
+//! - `--follow` on `ingest` with `--file` (M3: file tailing, Unix only).
+//! - `prune` subcommand (M4: time-based retention).
+//! - `LOGDIVE_DB` environment-variable fallback for `--db` (M4).
 
+mod prune_cmd;
 mod render;
 mod stats_cmd;
 
-use std::fs::File;
-use std::io::{self, BufRead, BufReader, IsTerminal, Write};
-use std::path::PathBuf;
-use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::io::{self, BufRead, IsTerminal};
+use std::path::{Path, PathBuf};
 
+use chrono::Utc;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use logdive_core::{
-    BATCH_SIZE, Indexer, InsertStats, LogEntry, LogdiveError, QueryParseError, Result, db_path,
-    execute, parse_line, parse_query,
+    Indexer, InsertStats, LogEntry, LogFormat, LogdiveError, Result, db_path, execute, parse_line,
+    parse_query,
 };
-
-use crate::render::{OutputFormat, render};
-use crate::stats_cmd::{StatsArgs, run_stats};
+use prune_cmd::{PruneArgs, run_prune};
+use render::{OutputFormat, render};
+use stats_cmd::{StatsArgs, run_stats};
 
 // ---------------------------------------------------------------------------
-// CLI grammar
+// CLI definition
 // ---------------------------------------------------------------------------
 
+/// Fast, self-hosted query engine for structured JSON logs.
 #[derive(Parser, Debug)]
-#[command(
-    name = "logdive",
-    version,
-    about = "Fast, self-hosted query engine for structured JSON logs",
-    long_about = None,
-)]
+#[command(name = "logdive", version, about, long_about = None)]
 struct Cli {
     /// Path to the index database. Defaults to ~/.logdive/index.db.
     ///
-    /// Global so every subcommand can override it uniformly.
-    #[arg(long, global = true, value_name = "PATH")]
+    /// Applies to all subcommands. Can also be set via the `LOGDIVE_DB`
+    /// environment variable; the command-line flag takes precedence when
+    /// both are provided.
+    #[arg(long, global = true, value_name = "PATH", env = "LOGDIVE_DB")]
     db: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -59,309 +54,367 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Ingest structured JSON log lines from a file or stdin into the index.
+    /// Ingest structured log lines from a file or stdin into the index.
     Ingest(IngestArgs),
-    /// Run a query against the index and render matching entries.
+    /// Query the index and render matching log entries.
     Query(QueryArgs),
     /// Report aggregate metadata about the index.
     Stats(StatsArgs),
+    /// Delete entries older than a cutoff, then VACUUM the database.
+    Prune(PruneArgs),
 }
 
+/// Arguments for the `ingest` subcommand.
 #[derive(clap::Args, Debug)]
-struct IngestArgs {
-    /// File to read from. If omitted, lines are read from stdin.
+pub struct IngestArgs {
+    /// Read from this file instead of stdin.
     #[arg(long, short = 'f', value_name = "PATH")]
     file: Option<PathBuf>,
 
-    /// Tag applied to each ingested entry whose JSON does not already
-    /// carry a `tag` field. Optional; unset means "untagged".
+    /// Attach a tag to every ingested entry that lacks a `tag` field.
     #[arg(long, short = 't', value_name = "TAG")]
     tag: Option<String>,
+
+    /// Input format of the log lines.
+    ///
+    /// `json` (default) expects newline-delimited JSON objects.
+    /// `logfmt` expects `key=value` pairs.
+    /// `plain` treats each line as an unstructured message.
+    #[arg(
+        long,
+        value_name = "FORMAT",
+        default_value = "json",
+        value_parser = parse_log_format
+    )]
+    format: LogFormat,
+
+    /// Stamp the current ingestion time on entries that have no timestamp.
+    ///
+    /// Without this flag, timestamp-less entries are silently skipped
+    /// (no-fabrication policy). Most useful with `--format plain`.
+    #[arg(long)]
+    timestamp_now: bool,
+
+    /// Watch the file for newly appended lines and ingest them continuously.
+    ///
+    /// Requires `--file`. Stdin already streams until EOF; `--follow` is
+    /// not needed and is rejected with an actionable error message.
+    ///
+    /// Unix only. Exits cleanly on Ctrl-C.
+    #[arg(long, requires = "file")]
+    follow: bool,
+
+    /// Exit the follow loop after this many filesystem events.
+    ///
+    /// Hidden flag for deterministic testing of the watch loop; not
+    /// intended for end-user use.
+    #[arg(long, value_name = "N", hide = true)]
+    max_events: Option<usize>,
 }
 
+/// Arguments for the `query` subcommand.
 #[derive(clap::Args, Debug)]
 struct QueryArgs {
-    /// Query expression, e.g. `level=error AND service=payments last 2h`.
-    ///
-    /// Multi-token queries must be quoted on the shell.
-    #[arg(value_name = "QUERY")]
+    /// Query expression (e.g. `level=error AND service=payments last 2h`).
     query: String,
 
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
     format: OutputFormat,
 
-    /// Maximum number of results to return. Use `0` for unlimited.
+    /// Maximum number of results to return. 0 means unlimited.
     #[arg(long, default_value_t = 1000)]
     limit: usize,
+}
+
+// ---------------------------------------------------------------------------
+// Clap value parser for LogFormat (keeps the clap dependency out of core)
+// ---------------------------------------------------------------------------
+
+fn parse_log_format(s: &str) -> std::result::Result<LogFormat, String> {
+    LogFormat::from_name(s)
+        .ok_or_else(|| format!("unknown format {s:?}; expected one of: json, logfmt, plain"))
 }
 
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
-fn main() -> ExitCode {
+fn main() {
     init_tracing();
     let cli = Cli::parse();
+    let db = db_path(cli.db.as_deref());
 
-    match run(cli) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            report_error(&e);
-            ExitCode::FAILURE
+    let result = match cli.command {
+        Command::Ingest(args) => handle_ingest(&db, args),
+        Command::Query(args) => handle_query(&db, args),
+        Command::Stats(args) => run_stats(&db, args),
+        Command::Prune(args) => run_prune(&db, args),
+    };
+
+    if let Err(e) = result {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ingest
+// ---------------------------------------------------------------------------
+
+fn handle_ingest(db: &Path, args: IngestArgs) -> Result<()> {
+    // --follow guard: Unix only; --file is guaranteed by clap `requires`.
+    if args.follow {
+        #[cfg(not(unix))]
+        return Err(LogdiveError::IoBare(io::Error::other(
+            "--follow is only supported on Unix (Linux / macOS)",
+        )));
+
+        #[cfg(unix)]
+        {
+            let path = args
+                .file
+                .as_deref()
+                .expect("clap `requires = \"file\"` ensures --file is always set with --follow");
+            return run_watch_loop(path, db, &args);
         }
     }
+
+    // One-shot ingestion from --file or stdin.
+    let mut indexer = Indexer::open(db)?;
+    let mut total = InsertStats::default();
+    let mut malformed: usize = 0;
+    let is_tty = io::stderr().is_terminal();
+
+    if let Some(ref path) = args.file {
+        let file = std::fs::File::open(path).map_err(|e| LogdiveError::io_at(path, e))?;
+        let reader = io::BufReader::new(file);
+        ingest_reader(
+            reader,
+            &mut indexer,
+            &args,
+            &mut total,
+            &mut malformed,
+            is_tty,
+        )?;
+    } else {
+        let stdin = io::stdin();
+        let reader = stdin.lock();
+        ingest_reader(
+            reader,
+            &mut indexer,
+            &args,
+            &mut total,
+            &mut malformed,
+            is_tty,
+        )?;
+    }
+
+    if is_tty {
+        // Move past the progress line.
+        eprintln!();
+    }
+    print_ingest_summary(total, malformed);
+    Ok(())
 }
 
-/// Render an error message for the user. `QueryParseError` is surfaced
-/// with a "query error:" prefix so users can tell parse failures apart
-/// from I/O or storage failures. Caret-rendering against the source
-/// string is deferred to milestone 9 polish.
-fn report_error(e: &LogdiveError) {
-    if let LogdiveError::QueryParse(qpe) = e {
-        let qpe: &QueryParseError = qpe;
-        eprintln!("logdive: query error: {qpe}");
-    } else {
-        eprintln!("logdive: {e}");
+/// Read all lines from `reader`, parse them, and insert into the index.
+///
+/// Applies `--format`, `--timestamp-now`, and `--tag` exactly once per
+/// line, matching the one-shot ingest contract. Flushes any leftover
+/// partial batch at end of input.
+fn ingest_reader<R: BufRead>(
+    reader: R,
+    indexer: &mut Indexer,
+    args: &IngestArgs,
+    total: &mut InsertStats,
+    malformed: &mut usize,
+    is_tty: bool,
+) -> Result<()> {
+    const BATCH: usize = 1000;
+    let mut batch: Vec<LogEntry> = Vec::with_capacity(BATCH);
+
+    for line_result in reader.lines() {
+        let line = line_result.map_err(LogdiveError::IoBare)?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match parse_line(args.format, &line) {
+            Some(mut entry) => {
+                if entry.timestamp.is_none() && args.timestamp_now {
+                    entry.timestamp = Some(Utc::now().to_rfc3339());
+                }
+                entry = entry.with_tag(args.tag.clone());
+                batch.push(entry);
+
+                if batch.len() >= BATCH {
+                    let stats = indexer.insert_batch(&batch)?;
+                    accumulate(total, &stats);
+                    batch.clear();
+                    if is_tty {
+                        eprint!(
+                            "\r  {} ingested  {} dedup  {} skipped",
+                            total.inserted, total.deduplicated, total.skipped_no_timestamp
+                        );
+                    }
+                }
+            }
+            None => *malformed += 1,
+        }
     }
+
+    // Flush the final partial batch.
+    if !batch.is_empty() {
+        let stats = indexer.insert_batch(&batch)?;
+        accumulate(total, &stats);
+    }
+    Ok(())
 }
+
+fn accumulate(total: &mut InsertStats, delta: &InsertStats) {
+    total.inserted += delta.inserted;
+    total.deduplicated += delta.deduplicated;
+    total.skipped_no_timestamp += delta.skipped_no_timestamp;
+}
+
+fn print_ingest_summary(stats: InsertStats, malformed: usize) {
+    eprintln!(
+        "ingested {}  dedup {}  no-timestamp {}  malformed {}",
+        stats.inserted, stats.deduplicated, stats.skipped_no_timestamp, malformed
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Follow / watch loop — Unix only
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+fn run_watch_loop(path: &Path, db: &Path, args: &IngestArgs) -> Result<()> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::Duration;
+
+    use notify::{RecursiveMode, Watcher, recommended_watcher};
+
+    use logdive_core::FileTailer;
+
+    let mut tailer = FileTailer::open(path)?;
+
+    // Channel carries raw notify results (errors + events alike).
+    let (tx, rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
+    let mut watcher = recommended_watcher(move |res| {
+        // Ignore send errors — they mean the receiver was dropped (shutdown).
+        let _ = tx.send(res);
+    })
+    .map_err(|e| LogdiveError::IoBare(io::Error::other(e.to_string())))?;
+
+    watcher
+        .watch(path, RecursiveMode::NonRecursive)
+        .map_err(|e| LogdiveError::IoBare(io::Error::other(e.to_string())))?;
+
+    // Shared stop flag. Ctrl-C handler sets it; main loop checks it.
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_clone = Arc::clone(&stop);
+    ctrlc::set_handler(move || stop_clone.store(true, Ordering::SeqCst))
+        .map_err(|e| LogdiveError::IoBare(io::Error::other(e.to_string())))?;
+
+    let mut indexer = Indexer::open(db)?;
+    let mut total = InsertStats::default();
+    let mut malformed: usize = 0;
+    let mut event_count: usize = 0;
+
+    eprintln!("following {} — Ctrl-C to stop", path.display());
+
+    while !stop.load(Ordering::SeqCst) {
+        match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(_event) => {
+                let lines = tailer.read_new_lines()?;
+                ingest_lines(&lines, &mut indexer, args, &mut total, &mut malformed)?;
+                event_count += 1;
+                if let Some(max) = args.max_events {
+                    if event_count >= max {
+                        break;
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                // Safety drain: deliver bytes that arrived without an event
+                // (can happen under heavy rotation or after a watcher hiccup).
+                let lines = tailer.read_new_lines()?;
+                if !lines.is_empty() {
+                    ingest_lines(&lines, &mut indexer, args, &mut total, &mut malformed)?;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    print_ingest_summary(total, malformed);
+    Ok(())
+}
+
+/// Parse and ingest a slice of log-line strings.
+///
+/// Mirrors `ingest_reader` but works on an already-split `&[String]` so
+/// the follow loop can call it without owning a reader.
+#[cfg(unix)]
+fn ingest_lines(
+    lines: &[String],
+    indexer: &mut Indexer,
+    args: &IngestArgs,
+    total: &mut InsertStats,
+    malformed: &mut usize,
+) -> Result<()> {
+    let mut batch: Vec<LogEntry> = Vec::with_capacity(lines.len());
+
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match parse_line(args.format, line) {
+            Some(mut entry) => {
+                if entry.timestamp.is_none() && args.timestamp_now {
+                    entry.timestamp = Some(Utc::now().to_rfc3339());
+                }
+                entry = entry.with_tag(args.tag.clone());
+                batch.push(entry);
+            }
+            None => *malformed += 1,
+        }
+    }
+
+    if !batch.is_empty() {
+        let stats = indexer.insert_batch(&batch)?;
+        accumulate(total, &stats);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// query
+// ---------------------------------------------------------------------------
+
+fn handle_query(db: &Path, args: QueryArgs) -> Result<()> {
+    let ast = parse_query(&args.query)?;
+    let limit = match args.limit {
+        0 => None,
+        n => Some(n),
+    };
+
+    let indexer = Indexer::open(db)?;
+    let entries = execute(&ast, indexer.connection(), limit)?;
+    render(&entries, args.format)
+}
+
+// ---------------------------------------------------------------------------
+// Tracing initialisation
+// ---------------------------------------------------------------------------
 
 fn init_tracing() {
-    // LOGDIVE_LOG controls verbosity of internal diagnostics. Default to
-    // `warn` so the CLI is quiet during normal use; users set
-    // `LOGDIVE_LOG=info` or `=debug` when troubleshooting.
     let filter = EnvFilter::try_from_env("LOGDIVE_LOG").unwrap_or_else(|_| EnvFilter::new("warn"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(io::stderr)
         .init();
-}
-
-fn run(cli: Cli) -> Result<()> {
-    let db = db_path(cli.db.as_deref());
-
-    // Each subcommand decides for itself how to treat the DB path — see
-    // the module-level note on the rationale.
-    match cli.command {
-        Command::Ingest(args) => {
-            let mut indexer = Indexer::open(&db)?;
-            run_ingest(&mut indexer, args)
-        }
-        Command::Query(args) => {
-            let indexer = Indexer::open(&db)?;
-            run_query(&indexer, args)
-        }
-        Command::Stats(args) => run_stats(&db, args),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Ingest
-// ---------------------------------------------------------------------------
-
-/// Aggregate counters and timing for an ingestion run.
-#[derive(Default, Debug)]
-struct IngestReport {
-    inserted: usize,
-    deduplicated: usize,
-    skipped_no_timestamp: usize,
-    /// Lines that failed JSON parsing (returned `None` from `parse_line`).
-    malformed: usize,
-    /// Lines that couldn't even be read (I/O error mid-stream). We count
-    /// these rather than aborting so a corrupt tail doesn't discard a
-    /// good head.
-    io_errors: usize,
-    /// Wall-clock time across the whole ingestion.
-    elapsed: Duration,
-}
-
-impl IngestReport {
-    fn fold_insert_stats(&mut self, s: InsertStats) {
-        self.inserted += s.inserted;
-        self.deduplicated += s.deduplicated;
-        self.skipped_no_timestamp += s.skipped_no_timestamp;
-    }
-
-    fn total_seen(&self) -> usize {
-        self.inserted
-            + self.deduplicated
-            + self.skipped_no_timestamp
-            + self.malformed
-            + self.io_errors
-    }
-}
-
-fn run_ingest(indexer: &mut Indexer, args: IngestArgs) -> Result<()> {
-    let tag = args.tag;
-
-    // Open the source. `match` rather than `if let` so both arms have
-    // the same bound type (`Box<dyn BufRead>`).
-    let reader: Box<dyn BufRead> = match args.file {
-        Some(ref p) => {
-            let f = File::open(p).map_err(|e| LogdiveError::io_at(p.clone(), e))?;
-            Box::new(BufReader::new(f))
-        }
-        None => Box::new(BufReader::new(io::stdin().lock())),
-    };
-
-    let tty = io::stderr().is_terminal();
-    let mut progress = Progress::new(tty);
-
-    let mut report = IngestReport::default();
-    let started = Instant::now();
-
-    let mut batch: Vec<LogEntry> = Vec::with_capacity(BATCH_SIZE);
-
-    for line_result in reader.lines() {
-        let line = match line_result {
-            Ok(l) => l,
-            Err(_) => {
-                // Mid-stream I/O error: log, count, move on. This can
-                // happen on truncated UTF-8 or a closed pipe; either way
-                // aborting would discard earlier successfully-ingested
-                // entries in the same batch.
-                report.io_errors += 1;
-                continue;
-            }
-        };
-
-        match parse_line(&line) {
-            Some(entry) => batch.push(entry.with_tag(tag.clone())),
-            None if line.trim().is_empty() => {
-                // Blank lines are not malformed — they're just noise.
-                // Don't count them.
-            }
-            None => report.malformed += 1,
-        }
-
-        if batch.len() >= BATCH_SIZE {
-            let stats = indexer.insert_batch(&batch)?;
-            report.fold_insert_stats(stats);
-            batch.clear();
-            progress.tick(&report, started.elapsed());
-        }
-    }
-
-    // Flush remainder.
-    if !batch.is_empty() {
-        let stats = indexer.insert_batch(&batch)?;
-        report.fold_insert_stats(stats);
-    }
-
-    report.elapsed = started.elapsed();
-    progress.finish(&report);
-    print_summary(&report);
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Query
-// ---------------------------------------------------------------------------
-
-fn run_query(indexer: &Indexer, args: QueryArgs) -> Result<()> {
-    // Parse: errors produce `LogdiveError::QueryParse` via the `From` impl
-    // in the unified error type, and are surfaced by `report_error` with a
-    // distinguishing prefix.
-    let ast = parse_query(&args.query)?;
-
-    // `--limit 0` → unlimited. Any other positive value → capped.
-    let limit = if args.limit == 0 {
-        None
-    } else {
-        Some(args.limit)
-    };
-
-    tracing::debug!(?limit, "executing query");
-    let rows = execute(&ast, indexer.connection(), limit)?;
-    tracing::debug!(result_count = rows.len(), "query returned results");
-
-    render(&rows, args.format)
-}
-
-// ---------------------------------------------------------------------------
-// Progress output (ingest)
-// ---------------------------------------------------------------------------
-
-/// Throttled progress renderer. On a TTY it rewrites one line via `\r`;
-/// otherwise it prints a newline-separated entry at most once per second,
-/// which keeps pipe-to-file output readable.
-struct Progress {
-    tty: bool,
-    last_tick: Instant,
-    tick_interval: Duration,
-}
-
-impl Progress {
-    fn new(tty: bool) -> Self {
-        Self {
-            tty,
-            // Set far enough in the past that the first tick always prints.
-            last_tick: Instant::now() - Duration::from_secs(3600),
-            // Quarter-second refresh is fluid on TTY, rare enough for files.
-            tick_interval: Duration::from_millis(250),
-        }
-    }
-
-    fn tick(&mut self, report: &IngestReport, elapsed: Duration) {
-        // Rate-limit: the indexer batches at 1000/line, so ticks come
-        // once per batch — still want to throttle tiny batches on slow
-        // inputs.
-        if self.last_tick.elapsed() < self.tick_interval {
-            return;
-        }
-        self.last_tick = Instant::now();
-        self.render(report, elapsed);
-    }
-
-    fn finish(&mut self, report: &IngestReport) {
-        // Always emit a final tick so the last-seen counters reflect
-        // reality, then close out the line on a TTY.
-        self.render(report, report.elapsed);
-        if self.tty {
-            // The render loop uses `\r` without a trailing newline — add
-            // one here so the summary appears on its own line.
-            eprintln!();
-        }
-    }
-
-    fn render(&self, report: &IngestReport, elapsed: Duration) {
-        let rate = lines_per_sec(report.total_seen(), elapsed);
-        let payload = format!(
-            "ingesting: {total:>7} seen | {ins:>7} new | {dedup:>5} dup | {bad:>5} skip | {rate:>7.0} lines/s",
-            total = report.total_seen(),
-            ins = report.inserted,
-            dedup = report.deduplicated,
-            bad = report.malformed + report.skipped_no_timestamp + report.io_errors,
-            rate = rate,
-        );
-        if self.tty {
-            // `\r` with no newline — next tick overwrites.
-            let mut err = io::stderr().lock();
-            let _ = write!(err, "\r{payload}");
-            let _ = err.flush();
-        } else {
-            eprintln!("{payload}");
-        }
-    }
-}
-
-fn lines_per_sec(n: usize, elapsed: Duration) -> f64 {
-    let secs = elapsed.as_secs_f64();
-    if secs <= 0.0 { 0.0 } else { n as f64 / secs }
-}
-
-fn print_summary(report: &IngestReport) {
-    let rate = lines_per_sec(report.total_seen(), report.elapsed);
-    eprintln!(
-        "ingest complete in {:.2}s ({:.0} lines/s)",
-        report.elapsed.as_secs_f64(),
-        rate
-    );
-    eprintln!("  inserted:     {}", report.inserted);
-    eprintln!("  deduplicated: {}", report.deduplicated);
-    eprintln!("  no timestamp: {}", report.skipped_no_timestamp);
-    eprintln!("  malformed:    {}", report.malformed);
-    if report.io_errors > 0 {
-        eprintln!("  io errors:    {}", report.io_errors);
-    }
 }

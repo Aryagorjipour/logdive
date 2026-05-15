@@ -1,10 +1,11 @@
 //! SQLite-backed index for ingested log entries.
 //!
 //! This module owns the persistent storage side of logdive: schema creation,
-//! row-level deduplication via `blake3`, and batched inserts of 1000 rows per
-//! transaction (per the decisions log entry dated 2026-04-19). The schema is
-//! reproduced verbatim from the project doc's "SQLite schema" section with
-//! `IF NOT EXISTS` added so opening an existing database is idempotent.
+//! row-level deduplication via `blake3`, batched inserts of 1000 rows per
+//! transaction (per the decisions log entry dated 2026-04-19), and time-based
+//! retention via [`Indexer::prune`]. The schema is reproduced verbatim from
+//! the project doc's "SQLite schema" section with `IF NOT EXISTS` added so
+//! opening an existing database is idempotent.
 //!
 //! `Indexer` is an owning handle over a `rusqlite::Connection`. It can be
 //! constructed against a filesystem path via [`Indexer::open`] or against an
@@ -78,6 +79,18 @@ impl InsertStats {
         self.deduplicated += other.deduplicated;
         self.skipped_no_timestamp += other.skipped_no_timestamp;
     }
+}
+
+/// Outcome of a [`Indexer::prune`] operation, surfaced to the CLI's `prune`
+/// subcommand for its completion summary.
+///
+/// Marked `#[non_exhaustive]` so later milestones can add fields (e.g. bytes
+/// reclaimed by the `VACUUM`) without breaking the public API.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PruneStats {
+    /// Number of rows deleted by the prune.
+    pub deleted: u64,
 }
 
 /// Aggregate metadata about the contents of an index.
@@ -182,6 +195,41 @@ impl Indexer {
             total.extend(stats);
         }
         Ok(total)
+    }
+
+    /// Delete every entry whose `timestamp` is strictly older than `cutoff`,
+    /// then `VACUUM` to reclaim the freed disk space.
+    ///
+    /// `cutoff` is compared lexically against the stored `timestamp` TEXT
+    /// column. This is correct for ISO-8601 / RFC3339 timestamps, which sort
+    /// chronologically as text — the same comparison contract the query
+    /// executor's `last` / `since` clauses rely on. A non-ISO-shaped cutoff
+    /// (or non-ISO timestamps in the index) will compare incorrectly, the
+    /// same known limitation that applies to time-range queries.
+    ///
+    /// The comparison is strict `<`: a row whose timestamp exactly equals
+    /// `cutoff` is **kept**, not deleted.
+    ///
+    /// Returns the number of rows deleted in [`PruneStats::deleted`].
+    ///
+    /// # VACUUM and transactions
+    ///
+    /// SQLite refuses to run `VACUUM` inside an explicit transaction, so this
+    /// method issues the `DELETE` and the `VACUUM` as two separate autocommit
+    /// statements rather than wrapping them in `conn.transaction()`. The
+    /// `DELETE` is a single statement and therefore atomic on its own; a
+    /// crash between the two would leave the rows deleted but the file not
+    /// yet compacted — harmless, since any later `VACUUM` reclaims the space.
+    pub fn prune(&mut self, cutoff: &str) -> Result<PruneStats> {
+        let deleted = self.conn.execute(
+            "DELETE FROM log_entries WHERE timestamp < ?1",
+            params![cutoff],
+        )?;
+        // VACUUM cannot run inside a transaction — issue it on its own.
+        self.conn.execute_batch("VACUUM")?;
+        Ok(PruneStats {
+            deleted: deleted as u64,
+        })
     }
 
     /// Read aggregate metadata about the index.
@@ -748,5 +796,166 @@ mod tests {
                 row.get::<_, i64>(0)
             });
         assert!(err.is_err());
+    }
+
+    // -----------------------------------------------------------------
+    // prune()
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn prune_deletes_entries_strictly_older_than_cutoff() {
+        let mut idx = Indexer::open_in_memory().unwrap();
+        idx.insert_batch(&[
+            make_entry("2026-04-01T00:00:00Z", "info", "old one"),
+            make_entry("2026-04-10T00:00:00Z", "info", "old two"),
+            make_entry("2026-04-20T00:00:00Z", "info", "kept"),
+        ])
+        .unwrap();
+
+        let stats = idx.prune("2026-04-15T00:00:00Z").unwrap();
+        assert_eq!(stats.deleted, 2);
+
+        let count: i64 = idx
+            .connection()
+            .query_row("SELECT COUNT(*) FROM log_entries", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // The surviving row is the one newer than the cutoff.
+        let surviving: String = idx
+            .connection()
+            .query_row("SELECT message FROM log_entries", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(surviving, "kept");
+    }
+
+    #[test]
+    fn prune_keeps_entry_exactly_at_cutoff() {
+        // The comparison is strict `<`, so a row whose timestamp equals the
+        // cutoff is retained, not deleted.
+        let mut idx = Indexer::open_in_memory().unwrap();
+        idx.insert_batch(&[make_entry("2026-04-15T00:00:00Z", "info", "boundary")])
+            .unwrap();
+
+        let stats = idx.prune("2026-04-15T00:00:00Z").unwrap();
+        assert_eq!(stats.deleted, 0);
+
+        let count: i64 = idx
+            .connection()
+            .query_row("SELECT COUNT(*) FROM log_entries", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn prune_on_empty_database_deletes_nothing() {
+        let mut idx = Indexer::open_in_memory().unwrap();
+        let stats = idx.prune("2026-04-15T00:00:00Z").unwrap();
+        assert_eq!(stats.deleted, 0);
+    }
+
+    #[test]
+    fn prune_with_cutoff_before_all_entries_deletes_nothing() {
+        let mut idx = Indexer::open_in_memory().unwrap();
+        idx.insert_batch(&[
+            make_entry("2026-04-20T00:00:00Z", "info", "a"),
+            make_entry("2026-04-21T00:00:00Z", "info", "b"),
+        ])
+        .unwrap();
+
+        let stats = idx.prune("2026-01-01T00:00:00Z").unwrap();
+        assert_eq!(stats.deleted, 0);
+
+        let count: i64 = idx
+            .connection()
+            .query_row("SELECT COUNT(*) FROM log_entries", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn prune_with_cutoff_after_all_entries_deletes_all() {
+        let mut idx = Indexer::open_in_memory().unwrap();
+        idx.insert_batch(&[
+            make_entry("2026-04-20T00:00:00Z", "info", "a"),
+            make_entry("2026-04-21T00:00:00Z", "info", "b"),
+            make_entry("2026-04-22T00:00:00Z", "info", "c"),
+        ])
+        .unwrap();
+
+        let stats = idx.prune("2027-01-01T00:00:00Z").unwrap();
+        assert_eq!(stats.deleted, 3);
+
+        let count: i64 = idx
+            .connection()
+            .query_row("SELECT COUNT(*) FROM log_entries", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn prune_returns_accurate_deleted_count() {
+        let mut idx = Indexer::open_in_memory().unwrap();
+        // Ten entries, one per day from the 1st to the 10th.
+        let entries: Vec<_> = (1..=10)
+            .map(|day| {
+                make_entry(
+                    &format!("2026-04-{day:02}T00:00:00Z"),
+                    "info",
+                    &format!("day-{day}"),
+                )
+            })
+            .collect();
+        idx.insert_batch(&entries).unwrap();
+
+        // Cutoff at the 6th deletes days 1-5 (strictly older): 5 rows.
+        let stats = idx.prune("2026-04-06T00:00:00Z").unwrap();
+        assert_eq!(stats.deleted, 5);
+
+        let count: i64 = idx
+            .connection()
+            .query_row("SELECT COUNT(*) FROM log_entries", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn prune_then_stats_reflects_deletion() {
+        let mut idx = Indexer::open_in_memory().unwrap();
+        idx.insert_batch(&[
+            make_entry("2026-04-01T00:00:00Z", "info", "gone"),
+            make_entry("2026-04-20T00:00:00Z", "info", "stays"),
+        ])
+        .unwrap();
+
+        idx.prune("2026-04-10T00:00:00Z").unwrap();
+
+        let stats = idx.stats().unwrap();
+        assert_eq!(stats.entries, 1);
+        assert_eq!(stats.min_timestamp.as_deref(), Some("2026-04-20T00:00:00Z"));
+        assert_eq!(stats.max_timestamp.as_deref(), Some("2026-04-20T00:00:00Z"));
+    }
+
+    #[test]
+    fn prune_works_on_disk_backed_index() {
+        // VACUUM exercises a different code path on-disk than in-memory;
+        // run the real on-disk path to confirm DELETE + VACUUM both succeed.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("prune.db");
+        let mut idx = Indexer::open(&db).unwrap();
+        idx.insert_batch(&[
+            make_entry("2026-04-01T00:00:00Z", "info", "old"),
+            make_entry("2026-04-20T00:00:00Z", "info", "new"),
+        ])
+        .unwrap();
+
+        let stats = idx.prune("2026-04-10T00:00:00Z").unwrap();
+        assert_eq!(stats.deleted, 1);
+
+        let count: i64 = idx
+            .connection()
+            .query_row("SELECT COUNT(*) FROM log_entries", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }
