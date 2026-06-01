@@ -124,7 +124,19 @@ cargo fmt --all --check
 echo "OK: formatting is consistent."
 
 # ---------------------------------------------------------------------
-# 8. Binary size check.
+# 8. cargo deny check (supply-chain policy).
+# ---------------------------------------------------------------------
+
+step "cargo deny check (licenses, advisories, sources)"
+if ! command -v cargo-deny >/dev/null 2>&1; then
+  echo "installing cargo-deny..."
+  cargo install cargo-deny --locked --quiet
+fi
+cargo deny check
+echo "OK: deny check passed."
+
+# ---------------------------------------------------------------------
+# 9. Binary size check.
 # ---------------------------------------------------------------------
 
 step "Verifying binary sizes (<10MB)"
@@ -132,7 +144,7 @@ sh scripts/check-binary-size.sh target/release
 echo "OK: binaries are under the size limit."
 
 # ---------------------------------------------------------------------
-# 9. cargo publish --dry-run verification.
+# 10. cargo publish --dry-run verification.
 # ---------------------------------------------------------------------
 #
 # Publishing a workspace with interdependent crates for the first time
@@ -189,7 +201,7 @@ else
 fi
 
 # ---------------------------------------------------------------------
-# 10. CHANGELOG has a non-TBD date for this version.
+# 11. CHANGELOG has a non-TBD date for this version.
 # ---------------------------------------------------------------------
 
 step "Verifying CHANGELOG date"

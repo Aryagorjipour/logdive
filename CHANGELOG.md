@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-01
+
+### Added
+
+- **H1 — Security tests** (`crates/core/tests/security.rs`, 10 tests)
+  - SQL injection via field name: tokenizer rejects `'`, `;`, Unicode
+    lookalikes (`U+2019`) — parse fails before any SQL is generated.
+  - SQL injection via value: bound parameters prevent `DROP TABLE` and
+    `1=1` tautology payloads from affecting results.
+  - LIKE wildcard escaping: `_` and `\` in `contains` queries match
+    literally, not as SQL wildcards or escape characters.
+  - Resource exhaustion: 1 000-disjunct OR query parses and executes
+    without stack overflow (iterative `parse_or_expr`). 10 MB raw line
+    ingested without panic or OOM.
+
+- **H2 — Functional tests** (28 new tests across 7 suites)
+  - Property-based (`proptest`): arbitrary input never panics; valid
+    equality queries produce single-group ASTs; OR disjunct count matches
+    input; printable ASCII in quoted values never panics.
+  - Cross-format dedup: same raw line ingested twice is one row; JSON
+    vs. logfmt with identical logical content are two distinct rows.
+  - Concurrent CLI ingest: two `logdive ingest` processes on the same
+    database produce no corruption and dedup is respected.
+  - Parser edge cases: UTF-8 BOM prefix rejected; deeply nested object
+    in a known field preserved in `fields` map; whitespace in known
+    field value preserved verbatim.
+  - Time-range: space-separator datetime accepted; boundary row at
+    cutoff is included (`>=`); far-future timestamp returns empty; very
+    large `last` duration saturates to epoch; UTC offset `+00:00`
+    equivalent to `Z`.
+  - Follow-mode: file deleted after open returns `Ok([])`, not error;
+    burst of appended lines read completely in one call.
+  - API integration: `limit` larger than match count returns all
+    matches; `contains` operator; `since` time-range; CORS preflight
+    with wildcard origin returns `access-control-allow-origin: *`; `raw`
+    field present in every response entry.
+  - Prune boundary: 1-second precision — entry at cutoff not deleted;
+    idempotent second prune with same cutoff deletes nothing.
+
+- **H3 — Supply-chain hardening**
+  - `Cargo.lock` tracked for reproducible builds and deterministic audit
+    scans.
+  - `deny.toml`: `cargo-deny` configuration with license allowlist
+    (MIT / Apache-2.0 / Apache-2.0 WITH LLVM-exception / BSD-2-Clause /
+    BSD-3-Clause / ISC / CC0-1.0 / MIT-0 / Unicode-3.0 / Unlicense /
+    Zlib / BSL-1.0), RUSTSEC advisory checks (`vulnerability = deny`,
+    `unsound = deny`), and crates.io-only source policy.
+  - `scripts/audit.sh`: `cargo-audit` runner; exits non-zero on any
+    known vulnerability.
+  - `scripts/sbom.sh`: generates a CycloneDX JSON SBOM via
+    `cargo-cyclonedx`; intended for release artifact attachment.
+  - `.github/workflows/audit.yml`: daily advisory scan and `cargo deny
+    check` (informational; does not block merges).
+  - `.github/workflows/ci.yml`: `permissions: contents: read` added;
+    `cargo deny check` added to the lint job (merge-blocking).
+
+### Changed
+
+- `LogEntry::with_tag` signature changed from `Option<String>` to
+  `Option<&str>`, eliminating a `String` clone per ingested entry at
+  both CLI ingest call sites (`ingest_reader` and `ingest_lines`).
+- `entry_to_json_string` in `logdive-api` now serialises directly via
+  `serde_json::to_string(&entry)` instead of constructing a `json!`
+  macro value with `entry.fields.clone()`. Eliminates an O(fields)
+  heap allocation per HTTP response row.
+
 ## [0.2.0] - 2026-05-15
 
 ### Added
