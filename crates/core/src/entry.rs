@@ -75,9 +75,9 @@ impl LogEntry {
     /// Override the tag. Used by the indexer to apply the `--tag` flag
     /// supplied at ingestion time: if the source JSON did not carry its own
     /// `tag`, the CLI-provided one is substituted here.
-    pub fn with_tag(mut self, tag: Option<String>) -> Self {
-        if tag.is_some() {
-            self.tag = tag;
+    pub fn with_tag(mut self, tag: Option<&str>) -> Self {
+        if let Some(t) = tag {
+            self.tag = Some(t.to_string());
         }
         self
     }
@@ -100,15 +100,13 @@ mod tests {
 
     #[test]
     fn with_tag_sets_when_some() {
-        let e = LogEntry::new("x").with_tag(Some("api".to_string()));
+        let e = LogEntry::new("x").with_tag(Some("api"));
         assert_eq!(e.tag.as_deref(), Some("api"));
     }
 
     #[test]
     fn with_tag_is_a_noop_when_none() {
-        let e = LogEntry::new("x")
-            .with_tag(Some("first".to_string()))
-            .with_tag(None);
+        let e = LogEntry::new("x").with_tag(Some("first")).with_tag(None);
         // An existing tag is NOT cleared by passing None — None means
         // "no override supplied", not "clear the tag".
         assert_eq!(e.tag.as_deref(), Some("first"));

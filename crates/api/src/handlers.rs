@@ -108,18 +108,7 @@ fn build_ndjson_response(rows: &[LogEntry]) -> Response {
 /// `fields`, `raw`. `tag` is `null` when absent; `fields` is always an
 /// object.
 fn entry_to_json_string(entry: &LogEntry) -> String {
-    // Using `serde_json::json!` rather than `#[derive(Serialize)]` on
-    // `LogEntry` keeps the serde annotation burden out of core. This
-    // module owns the HTTP wire shape.
-    let value = serde_json::json!({
-        "timestamp": entry.timestamp,
-        "level":     entry.level,
-        "message":   entry.message,
-        "tag":       entry.tag,
-        "fields":    serde_json::Value::Object(entry.fields.clone()),
-        "raw":       entry.raw,
-    });
-    value.to_string()
+    serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_string())
 }
 
 // ---------------------------------------------------------------------------

@@ -220,4 +220,38 @@ mod tests {
         assert!(e.fields.is_empty());
         assert_eq!(e.raw, "{}");
     }
+
+    #[test]
+    fn utf8_bom_prefix_returns_none() {
+        // A UTF-8 BOM (\xEF\xBB\xBF) before `{` produces bytes that
+        // serde_json cannot parse as JSON — the parser must return None
+        // gracefully rather than propagating an error.
+        let line_with_bom = "\u{FEFF}{\"level\":\"info\"}";
+        assert!(
+            parse_line(line_with_bom).is_none(),
+            "BOM-prefixed line must be rejected"
+        );
+    }
+
+    #[test]
+    fn deeply_nested_object_in_known_field_is_preserved_in_fields_map() {
+        // A deeply nested JSON value under `message` (a known key) must not
+        // panic and must land in `fields` under its original key, with
+        // `message` remaining None (non-string complex values are not coerced).
+        let line = r#"{"message":{"a":{"b":{"c":{"d":{"e":"deep"}}}}}}"#;
+        let e = parse_line(line).expect("valid JSON must parse");
+        assert!(e.message.is_none(), "nested object must not be coerced");
+        assert!(
+            e.fields.contains_key("message"),
+            "nested object must be preserved in fields"
+        );
+    }
+
+    #[test]
+    fn whitespace_in_known_field_value_is_preserved_not_trimmed() {
+        // The parser must not trim whitespace from string values.
+        // "  warn  " is stored verbatim so substring queries still match.
+        let e = parse_line(r#"{"level":"  warn  "}"#).expect("should parse");
+        assert_eq!(e.level.as_deref(), Some("  warn  "));
+    }
 }

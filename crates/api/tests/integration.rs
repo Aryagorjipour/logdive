@@ -16,7 +16,7 @@ use std::path::PathBuf;
 
 use axum::{
     body::Body,
-    http::{Request, StatusCode},
+    http::{HeaderValue, Request, StatusCode},
 };
 use http_body_util::BodyExt;
 use serde_json::Value;
@@ -421,4 +421,140 @@ async fn post_to_query_endpoint_returns_405() {
         .expect("oneshot");
 
     assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+// ---------------------------------------------------------------------------
+// Additional coverage (H2)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn query_limit_larger_than_match_count_returns_all_matches() {
+    // limit=100 on a 3-row DB must return all 3 rows — the limit is a cap,
+    // not an exact count.
+    let (_dir, db) = populated_db();
+    let router = app(db);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .uri("/query?q=since+2020-01-01&limit=100")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rows = parse_ndjson(&body_text(resp).await);
+    assert_eq!(rows.len(), 3, "limit > count must return all matching rows");
+}
+
+#[tokio::test]
+async fn query_with_contains_operator_returns_substring_match() {
+    let (_dir, db) = populated_db();
+    let router = app(db);
+
+    // "payment failed" contains "failed"; "health check ok" does not.
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .uri("/query?q=message+contains+%22failed%22")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rows = parse_ndjson(&body_text(resp).await);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["message"], "payment failed");
+}
+
+#[tokio::test]
+async fn query_with_since_time_range_filters_by_timestamp() {
+    // Fixture rows: 10:00, 11:00, 12:00. since 11:00 must return the two
+    // rows at 11:00 and 12:00 (the boundary is inclusive).
+    let (_dir, db) = populated_db();
+    let router = app(db);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .uri("/query?q=since+2026-04-20T11%3A00%3A00Z")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rows = parse_ndjson(&body_text(resp).await);
+    assert_eq!(
+        rows.len(),
+        2,
+        "since boundary is inclusive; 2 rows expected"
+    );
+}
+
+#[tokio::test]
+async fn options_preflight_with_wildcard_cors_returns_acao_star() {
+    // When the router has wildcard CORS enabled, an OPTIONS preflight must
+    // receive an Access-Control-Allow-Origin: * header.
+    let (_dir, db) = populated_db();
+    let state = logdive_api::state::AppState::new(db);
+    let router = logdive_api::router::build_router(state, vec![HeaderValue::from_static("*")]);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/query")
+                .header("Origin", "https://example.com")
+                .header("Access-Control-Request-Method", "GET")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    let acao = resp
+        .headers()
+        .get("access-control-allow-origin")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(
+        acao,
+        Some("*"),
+        "wildcard CORS preflight must return ACAO: *"
+    );
+}
+
+#[tokio::test]
+async fn query_response_entries_include_raw_field() {
+    // Each NDJSON row must carry the `raw` field so clients can reproduce
+    // the original log line without loss.
+    let (_dir, db) = populated_db();
+    let router = app(db);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .uri("/query?q=level%3Derror&limit=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rows = parse_ndjson(&body_text(resp).await);
+    assert_eq!(rows.len(), 1);
+    assert!(
+        rows[0]["raw"].is_string(),
+        "each response entry must include the `raw` field"
+    );
+    assert!(
+        !rows[0]["raw"].as_str().unwrap().is_empty(),
+        "`raw` field must be non-empty"
+    );
 }

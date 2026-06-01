@@ -531,4 +531,58 @@ mod tests {
             "expected LogdiveError::Io"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Test 16
+    // -----------------------------------------------------------------------
+    /// If the watched file is deleted after `open`, `read_new_lines` returns
+    /// `Ok(vec![])` — the NotFound branch in the metadata check. The caller
+    /// can retry on the next poll cycle.
+    #[test]
+    fn file_deleted_after_open_returns_ok_empty() {
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().to_path_buf();
+
+        let mut tailer = FileTailer::open(&path).unwrap();
+
+        // Delete the file while the tailer holds it open.
+        drop(f);
+        assert!(!path.exists(), "file must be gone before read");
+
+        let result = tailer.read_new_lines();
+        assert!(result.is_ok(), "deleted file must not return Err");
+        assert!(
+            result.unwrap().is_empty(),
+            "deleted file must return empty line list"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 17
+    // -----------------------------------------------------------------------
+    /// After several empty-read cycles, a burst of lines appended all at once
+    /// must be returned in full on the first read that finds data.
+    #[test]
+    fn burst_of_lines_after_idle_reads_returns_all() {
+        let mut f = NamedTempFile::new().unwrap();
+        let mut tailer = FileTailer::open(f.path()).unwrap();
+
+        // Multiple empty reads to confirm the idle state.
+        for _ in 0..3 {
+            assert!(tailer.read_new_lines().unwrap().is_empty());
+        }
+
+        // Burst: append 50 lines at once.
+        let burst: String = (0..50).map(|i| format!("line-{i}\n")).collect();
+        append(&mut f, burst.as_bytes());
+
+        let lines = tailer.read_new_lines().unwrap();
+        assert_eq!(
+            lines.len(),
+            50,
+            "all 50 burst lines must arrive in one read"
+        );
+        assert_eq!(lines[0], "line-0");
+        assert_eq!(lines[49], "line-49");
+    }
 }

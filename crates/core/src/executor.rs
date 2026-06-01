@@ -853,4 +853,99 @@ mod tests {
         let result = column_for_field("service; DROP TABLE log_entries--");
         assert!(matches!(result, Err(LogdiveError::UnsafeFieldName(_))));
     }
+
+    #[test]
+    fn is_safe_json_path_segment_rejects_single_quote() {
+        assert!(!is_safe_json_path_segment("service'"));
+    }
+
+    #[test]
+    fn is_safe_json_path_segment_rejects_space() {
+        assert!(!is_safe_json_path_segment("ser vice"));
+    }
+
+    #[test]
+    fn is_safe_json_path_segment_rejects_empty_string() {
+        assert!(!is_safe_json_path_segment(""));
+    }
+
+    #[test]
+    fn is_safe_json_path_segment_allows_dotted() {
+        assert!(is_safe_json_path_segment("user.id"));
+    }
+
+    #[test]
+    fn column_for_field_rejects_hyphen_payload() {
+        // `svc-name` passes the tokenizer (hyphens allowed in bare words) but
+        // is caught by the executor's defensive re-check before reaching SQL.
+        let err = column_for_field("svc-name").unwrap_err();
+        assert!(matches!(err, LogdiveError::UnsafeFieldName(_)));
+    }
+
+    #[test]
+    fn column_for_field_rejects_unicode_non_ascii() {
+        // U+2019 RIGHT SINGLE QUOTATION MARK — visually similar to a quote,
+        // multi-byte UTF-8. Not ASCII-alphanumeric, so rejected as unsafe.
+        let err = column_for_field("svc\u{2019}").unwrap_err();
+        assert!(matches!(err, LogdiveError::UnsafeFieldName(_)));
+    }
+
+    // -----------------------------------------------------------------
+    // Time-range edge cases
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn since_accepts_naive_datetime_space_separator() {
+        // `since "YYYY-MM-DD HH:MM:SS"` (space instead of T) must be parsed
+        // as UTC midnight and filter correctly.
+        let idx = fixture();
+        // Row at 10:00 is the boundary; rows at 11:00 and 12:00 are above.
+        let rows = run_query(idx.connection(), r#"since "2026-04-20 11:00:00""#);
+        assert_eq!(
+            rows.len(),
+            2,
+            "space-separated naive datetime must filter rows"
+        );
+    }
+
+    #[test]
+    fn since_boundary_row_at_cutoff_is_included() {
+        // `since` uses `>=`, so a row whose timestamp equals the cutoff must
+        // appear in results — it is not strictly in the past.
+        let idx = fixture();
+        let rows = run_query(idx.connection(), "since 2026-04-20T12:00:00Z");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].timestamp.as_deref(), Some("2026-04-20T12:00:00Z"));
+    }
+
+    #[test]
+    fn since_future_timestamp_returns_empty() {
+        let idx = fixture();
+        let rows = run_query(idx.connection(), "since 2030-01-01T00:00:00Z");
+        assert!(rows.is_empty(), "future cutoff must return no rows");
+    }
+
+    #[test]
+    fn last_very_large_amount_saturates_to_epoch_returns_all_rows() {
+        // A pathologically large duration saturates to the Unix epoch (via
+        // `checked_sub_signed` → `unwrap_or` epoch fallback in executor).
+        // All rows with any timestamp must match; must not panic or error.
+        let idx = fixture();
+        // 9_999_999_999h ≈ 1.14 billion years — far beyond any real timestamp.
+        let rows = run_query(idx.connection(), "last 9999999999h");
+        assert_eq!(rows.len(), 3, "epoch-saturated cutoff must match all rows");
+    }
+
+    #[test]
+    fn since_rfc3339_with_utc_offset_equivalent_to_z() {
+        // +00:00 and Z are both UTC; the cutoff must be identical.
+        let idx = fixture();
+        let rows_z = run_query(idx.connection(), "since 2026-04-20T11:00:00Z");
+        let rows_offset = run_query(idx.connection(), r#"since "2026-04-20T11:00:00+00:00""#);
+        assert_eq!(
+            rows_z.len(),
+            rows_offset.len(),
+            "Z and +00:00 offsets must produce the same row count"
+        );
+    }
 }
