@@ -257,6 +257,47 @@ mod tests {
         assert_eq!(parse_error_body(&text), "internal server error");
     }
 
+    #[tokio::test]
+    async fn internal_error_body_never_contains_db_path() {
+        use std::path::PathBuf;
+        // An Io error carrying a sensitive path must be swallowed by
+        // AppError::Internal — the filesystem path must never reach the
+        // HTTP client.
+        let inner = logdive_core::LogdiveError::io_at(
+            PathBuf::from("/sensitive/path/to/index.db"),
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied"),
+        );
+        let err = AppError::Internal(inner);
+        let (status, text) = read_body(err.into_response()).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            !text.contains("/sensitive/path"),
+            "filesystem path must not appear in HTTP response body",
+        );
+    }
+
+    #[tokio::test]
+    async fn internal_error_body_never_contains_sqlite_error_text() {
+        // SQLite's error for a missing read-only file is "unable to open
+        // database file". That string must be swallowed and never forwarded
+        // to the HTTP client.
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing2.db");
+        let inner =
+            logdive_core::Indexer::open_read_only(&missing).expect_err("should fail on missing db");
+
+        let err = AppError::Internal(inner);
+        let (_, text) = read_body(err.into_response()).await;
+        assert!(
+            !text.contains("unable to open"),
+            "SQLite error text must not appear in HTTP body",
+        );
+        assert!(
+            !text.contains("database file"),
+            "SQLite error text must not appear in HTTP body",
+        );
+    }
+
     #[test]
     fn bad_request_constructor_accepts_anything_displayable() {
         // Compile-time check that the helper works with &str, String, and

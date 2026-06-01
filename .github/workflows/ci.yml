@@ -10,6 +10,10 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Minimal permissions: this workflow only reads code and reports status.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -92,3 +96,9 @@ jobs:
 
       - name: Format check
         run: cargo fmt --all --check
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --quiet
+
+      - name: cargo deny check
+        run: cargo deny check

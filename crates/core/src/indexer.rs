@@ -771,6 +771,66 @@ mod tests {
     }
 
     #[test]
+    fn open_read_only_rejects_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ro-update.db");
+        {
+            let _ = Indexer::open(&db).unwrap();
+        }
+        let ro = Indexer::open_read_only(&db).unwrap();
+        let result = ro
+            .connection()
+            .execute("UPDATE log_entries SET level = 'x' WHERE 1=0", []);
+        assert!(result.is_err(), "read-only connection must reject UPDATE");
+    }
+
+    #[test]
+    fn open_read_only_rejects_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ro-delete.db");
+        {
+            let _ = Indexer::open(&db).unwrap();
+        }
+        let ro = Indexer::open_read_only(&db).unwrap();
+        let result = ro
+            .connection()
+            .execute("DELETE FROM log_entries WHERE 1=0", []);
+        assert!(result.is_err(), "read-only connection must reject DELETE");
+    }
+
+    #[test]
+    fn open_read_only_rejects_create_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ro-ddl.db");
+        {
+            let _ = Indexer::open(&db).unwrap();
+        }
+        let ro = Indexer::open_read_only(&db).unwrap();
+        let result = ro
+            .connection()
+            .execute_batch("CREATE TABLE sec_test (x TEXT)");
+        assert!(
+            result.is_err(),
+            "read-only connection must reject CREATE TABLE"
+        );
+    }
+
+    #[test]
+    fn open_read_only_rejects_pragma_user_version_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ro-pragma.db");
+        {
+            let _ = Indexer::open(&db).unwrap();
+        }
+        let ro = Indexer::open_read_only(&db).unwrap();
+        let result = ro.connection().execute_batch("PRAGMA user_version = 42");
+        assert!(
+            result.is_err(),
+            "read-only connection must reject PRAGMA writes"
+        );
+    }
+
+    #[test]
     fn open_read_only_does_not_run_schema_migrations() {
         // If `open_read_only` tried to CREATE IF NOT EXISTS anything, it
         // would error against a read-only connection. Opening an empty DB
@@ -957,5 +1017,50 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM log_entries", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn prune_one_second_boundary_deletes_only_strictly_older() {
+        // Two rows 1 second apart; cutoff is the older one's timestamp.
+        // Only the row strictly before the cutoff must be deleted.
+        let mut idx = Indexer::open_in_memory().unwrap();
+        idx.insert_batch(&[
+            make_entry("2026-04-20T10:00:00Z", "info", "at-cutoff"),
+            make_entry("2026-04-20T10:00:01Z", "info", "one-second-later"),
+        ])
+        .unwrap();
+
+        let stats = idx.prune("2026-04-20T10:00:00Z").unwrap();
+        assert_eq!(
+            stats.deleted, 0,
+            "row at cutoff must be retained (strict <)"
+        );
+
+        let stats = idx.prune("2026-04-20T10:00:01Z").unwrap();
+        assert_eq!(
+            stats.deleted, 1,
+            "row strictly before the second cutoff must be deleted"
+        );
+    }
+
+    #[test]
+    fn prune_idempotent_second_prune_with_same_cutoff_deletes_nothing() {
+        // After the first prune removes all eligible rows, a second prune
+        // with the same cutoff must report 0 deleted — nothing left to remove.
+        let mut idx = Indexer::open_in_memory().unwrap();
+        idx.insert_batch(&[
+            make_entry("2026-04-01T00:00:00Z", "info", "old"),
+            make_entry("2026-04-20T00:00:00Z", "info", "keep"),
+        ])
+        .unwrap();
+
+        let first = idx.prune("2026-04-10T00:00:00Z").unwrap();
+        assert_eq!(first.deleted, 1);
+
+        let second = idx.prune("2026-04-10T00:00:00Z").unwrap();
+        assert_eq!(
+            second.deleted, 0,
+            "re-pruning same cutoff must delete nothing"
+        );
     }
 }

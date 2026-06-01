@@ -35,7 +35,7 @@ curl 'http://127.0.0.1:4000/query?q=level%3Derror&limit=100'
 curl 'http://127.0.0.1:4000/version'
 ```
 
-> **Status: v0.2.0.** Core feature set complete and tested. Adds multi-format ingestion, follow mode, OR queries, pruning, a Docker image, and a versioned HTTP API. See [v1 non-goals](#v1-non-goals) for what is explicitly out of scope.
+> **Status: v0.2.1.** Core feature set complete and tested. Adds multi-format ingestion, follow mode, OR queries, pruning, a Docker image, and a versioned HTTP API. Includes a full security and functional test suite, supply-chain hardening (`cargo-deny`, SBOM, daily audit CI), and allocation improvements in the HTTP query path. See [v1 non-goals](#v1-non-goals) for what is explicitly out of scope.
 
 ---
 
@@ -262,7 +262,7 @@ Official images for `linux/amd64` and `linux/arm64` are published to GHCR on eve
 ```bash
 docker pull ghcr.io/aryagorjipour/logdive:latest
 # or pin to a specific version:
-docker pull ghcr.io/aryagorjipour/logdive:0.2.0
+docker pull ghcr.io/aryagorjipour/logdive:0.2.1
 ```
 
 ### Start the API server
@@ -404,7 +404,7 @@ Response shape:
 
 ```json
 {
-  "version": "0.2.0",
+  "version": "0.2.1",
   "formats": ["json", "logfmt", "plain"],
   "capabilities": ["query", "stats", "version"]
 }

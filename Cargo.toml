@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Arya (ArySmart) Gorjipour"]
@@ -17,7 +17,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 # Internal
-logdive-core = { path = "crates/core", version = "0.2.0" }
+logdive-core = { path = "crates/core", version = "0.2.1" }
 
 # Core: storage, hashing, serialization, time
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -45,6 +45,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Dev
 tempfile = "3"
 criterion = "0.5"
+proptest = "1"
 
 # Release profile — targets the "<10MB binary" task in Phase 4
 [profile.release]

@@ -1359,6 +1359,39 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // validate_field_name direct tests
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn validate_field_name_rejects_hyphen() {
+        // The tokenizer allows `-` inside identifiers so bare-word values like
+        // `x-request-id` tokenize correctly. validate_field_name enforces the
+        // stricter field-name subset that disallows it.
+        assert!(validate_field_name("service-v2", 0).is_err());
+    }
+
+    #[test]
+    fn validate_field_name_rejects_colon() {
+        // `:` is allowed by the tokenizer (datetime literals), rejected here.
+        assert!(validate_field_name("a:b", 0).is_err());
+    }
+
+    #[test]
+    fn validate_field_name_rejects_bang() {
+        assert!(validate_field_name("field!", 0).is_err());
+    }
+
+    #[test]
+    fn validate_field_name_allows_dotted_field() {
+        assert!(validate_field_name("user.id", 0).is_ok());
+    }
+
+    #[test]
+    fn validate_field_name_allows_leading_underscore() {
+        assert!(validate_field_name("_private", 0).is_ok());
+    }
+
+    // -----------------------------------------------------------------
     // Tokenizer edge cases (carried forward from v0.1)
     // -----------------------------------------------------------------
 

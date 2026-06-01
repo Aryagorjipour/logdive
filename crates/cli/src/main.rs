@@ -244,7 +244,7 @@ fn ingest_reader<R: BufRead>(
                 if entry.timestamp.is_none() && args.timestamp_now {
                     entry.timestamp = Some(Utc::now().to_rfc3339());
                 }
-                entry = entry.with_tag(args.tag.clone());
+                entry = entry.with_tag(args.tag.as_deref());
                 batch.push(entry);
 
                 if batch.len() >= BATCH {
@@ -377,7 +377,7 @@ fn ingest_lines(
                 if entry.timestamp.is_none() && args.timestamp_now {
                     entry.timestamp = Some(Utc::now().to_rfc3339());
                 }
-                entry = entry.with_tag(args.tag.clone());
+                entry = entry.with_tag(args.tag.as_deref());
                 batch.push(entry);
             }
             None => *malformed += 1,

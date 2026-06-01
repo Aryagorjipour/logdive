@@ -441,6 +441,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_cors_origins_control_char_origin_is_rejected() {
+        // A null byte is not a valid HTTP header byte; parse must return Err
+        // and identify the offending origin in the message.
+        let result = parse_cors_origins(Some("https://ok.com,\x00evil".to_string()));
+        assert!(
+            result.is_err(),
+            "origin containing null byte must be rejected"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .contains("not a valid HTTP header value"),
+            "error must identify the offending origin",
+        );
+    }
+
+    #[test]
     fn cors_summary_disabled() {
         assert_eq!(cors_summary(&[]), "disabled");
     }
