@@ -27,6 +27,22 @@
 //! builder that adds maintenance cost without performance benefit.
 //! SQLite's planner ignores redundant parens.
 //!
+//! # Parenthesized groups (v0.3.0)
+//!
+//! `Clause::Group` wraps an inner `QueryNode::Or` subtree produced by a
+//! `(` … `)` expression in the query language. The translator recurses
+//! into the subtree via `translate_and_group` and parenthesizes the
+//! result so it composes correctly with surrounding AND/OR operators:
+//!
+//! ```sql
+//! -- (level=error OR level=warn) AND service=payments
+//! WHERE (((level = ?) OR (level = ?)) AND json_extract(fields, '$.service') = ?)
+//! ```
+//!
+//! The extra level of parentheses is redundant for correctness but keeps
+//! the emitter uniform — every AND-group is parenthesized, whether it
+//! came from the top-level OR or from an inner Group clause.
+//!
 //! # Timestamp handling
 //!
 //! Timestamps are compared as TEXT, which works correctly for any ISO-8601
@@ -176,6 +192,27 @@ fn translate_clause(clause: &Clause, now: DateTime<Utc>) -> Result<(String, Vec<
                 "timestamp >= ?".to_string(),
                 vec![SqlValue::Text(dt.to_rfc3339())],
             ))
+        }
+        Clause::Group(inner) => {
+            // Recurse into the parenthesized subexpression. Each inner
+            // AND-group is already parenthesized by `translate_and_group`;
+            // multiple groups are joined with ` OR ` inside an extra pair
+            // of parens so the whole group composes correctly with the
+            // surrounding AND expression.
+            let QueryNode::Or(groups) = inner.as_ref();
+            let mut group_sqls: Vec<String> = Vec::with_capacity(groups.len());
+            let mut binds: Vec<Bind> = Vec::new();
+            for group in groups {
+                let (gsql, mut gbinds) = translate_and_group(group, now)?;
+                group_sqls.push(gsql);
+                binds.append(&mut gbinds);
+            }
+            let sql = if group_sqls.len() == 1 {
+                group_sqls.into_iter().next().unwrap()
+            } else {
+                format!("({})", group_sqls.join(" OR "))
+            };
+            Ok((sql, binds))
         }
     }
 }
@@ -626,6 +663,66 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // SQL generation — parenthesized group cases (new in v0.3.0)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn paren_single_clause_sql_shape_and_binds() {
+        // `(level=error)` acquires one extra level of parens vs the plain form
+        // because the Group clause is itself parenthesized by translate_and_group.
+        // Both forms are semantically equivalent; binds must be identical.
+        let paren_ast = parse("(level=error)").unwrap();
+        let plain_ast = parse("level=error").unwrap();
+        let (paren_sql, paren_binds) = build_sql(&paren_ast, None, Utc::now()).unwrap();
+        let (plain_sql, plain_binds) = build_sql(&plain_ast, None, Utc::now()).unwrap();
+        assert!(
+            paren_sql.contains("WHERE ((level = ?))"),
+            "paren form: {paren_sql}"
+        );
+        assert!(
+            plain_sql.contains("WHERE (level = ?)"),
+            "plain form: {plain_sql}"
+        );
+        assert_eq!(paren_binds, plain_binds);
+    }
+
+    #[test]
+    fn paren_or_inside_and_emits_nested_parens() {
+        // `(level=error OR level=warn) AND service=payments`
+        // Expected WHERE shape: `(((level = ?) OR (level = ?)) AND json_extract(fields, '$.service') = ?)`
+        let ast = parse("(level=error OR level=warn) AND service=payments").unwrap();
+        let (sql, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        // The inner OR group must be parenthesized inside the outer AND group.
+        assert!(sql.contains("((level = ?) OR (level = ?))"));
+        assert!(sql.contains("json_extract(fields, '$.service') = ?"));
+        assert_eq!(binds.len(), 3);
+        match (&binds[0], &binds[1], &binds[2]) {
+            (SqlValue::Text(a), SqlValue::Text(b), SqlValue::Text(c)) => {
+                assert_eq!(a, "error");
+                assert_eq!(b, "warn");
+                assert_eq!(c, "payments");
+            }
+            other => panic!("unexpected binds: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn paren_group_binds_are_in_clause_order() {
+        // Bind values inside the paren group must precede the outer AND clause.
+        let ast = parse("(a=1 OR b=2) AND c=3").unwrap();
+        let (_, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        assert_eq!(binds.len(), 3);
+        match (&binds[0], &binds[1], &binds[2]) {
+            (SqlValue::Integer(a), SqlValue::Integer(b), SqlValue::Integer(c)) => {
+                assert_eq!(*a, 1);
+                assert_eq!(*b, 2);
+                assert_eq!(*c, 3);
+            }
+            other => panic!("unexpected binds: {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------
     // Round-trip: insert, query (without OR), assert results
     // -----------------------------------------------------------------
 
@@ -842,6 +939,89 @@ mod tests {
         let rows = run_query(idx.connection(), "level=fatal OR level=warn");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].level.as_deref(), Some("warn"));
+    }
+
+    // -----------------------------------------------------------------
+    // Round-trip: parenthesized group queries (new in v0.3.0)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn round_trip_paren_single_clause_same_result_as_unwrapped() {
+        // `(level=error)` must return the same rows as `level=error`.
+        let idx = fixture();
+        let paren = run_query(idx.connection(), "(level=error)");
+        let plain = run_query(idx.connection(), "level=error");
+        assert_eq!(paren.len(), plain.len());
+        let paren_ts: HashSet<_> = paren.iter().map(|e| e.timestamp.clone()).collect();
+        let plain_ts: HashSet<_> = plain.iter().map(|e| e.timestamp.clone()).collect();
+        assert_eq!(paren_ts, plain_ts);
+    }
+
+    #[test]
+    fn round_trip_paren_or_inside_and_filters_correctly() {
+        // Fixture rows:
+        //   a: error, service=payments
+        //   b: info,  service=payments
+        //   c: error, service=users
+        //
+        // `(level=error OR level=info) AND service=payments`
+        // Matches a (error/payments) and b (info/payments). NOT c (users).
+        let idx = fixture();
+        let rows = run_query(
+            idx.connection(),
+            "(level=error OR level=info) AND service=payments",
+        );
+        assert_eq!(rows.len(), 2);
+        let messages: HashSet<String> = rows
+            .iter()
+            .map(|e| e.message.clone().unwrap_or_default())
+            .collect();
+        assert!(messages.contains("payment failed"));
+        assert!(messages.contains("health check"));
+        assert!(!messages.contains("timeout on db call"));
+    }
+
+    #[test]
+    fn round_trip_paren_changes_precedence_vs_no_paren() {
+        // Fixture rows:
+        //   a: error, service=payments
+        //   b: info,  service=payments
+        //   c: error, service=users
+        //
+        // WITHOUT parens: `level=error OR level=info AND service=payments`
+        //   = (level=error) OR (level=info AND service=payments)
+        //   Matches a, c (error) + b (info/payments) = 3 rows.
+        //
+        // WITH parens: `(level=error OR level=info) AND service=payments`
+        //   = ((level=error OR level=info)) AND service=payments
+        //   Matches a (error/payments) + b (info/payments) = 2 rows.
+        let idx = fixture();
+        let without_paren = run_query(
+            idx.connection(),
+            "level=error OR level=info AND service=payments",
+        );
+        let with_paren = run_query(
+            idx.connection(),
+            "(level=error OR level=info) AND service=payments",
+        );
+        assert_eq!(
+            without_paren.len(),
+            3,
+            "no parens: all error rows + info/payments"
+        );
+        assert_eq!(with_paren.len(), 2, "parens: only payments-service rows");
+    }
+
+    #[test]
+    fn round_trip_nested_parens_execute_correctly() {
+        // `((level=error) OR level=info) AND service=payments`
+        // Outer paren wraps an inner paren — same result as single-level paren test.
+        let idx = fixture();
+        let rows = run_query(
+            idx.connection(),
+            "((level=error) OR level=info) AND service=payments",
+        );
+        assert_eq!(rows.len(), 2);
     }
 
     // -----------------------------------------------------------------

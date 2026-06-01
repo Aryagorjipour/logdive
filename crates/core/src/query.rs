@@ -1,16 +1,15 @@
 //! Query language: tokenizer, AST, and recursive descent parser.
 //!
 //! Implements the grammar from the project doc's "Notes → Query language
-//! grammar" section, extended in v0.2.0 to support OR per the locked
-//! v0.2.0 scope (handoff doc + 2026-04-19 decisions log entry promising
-//! "OR ships in v2").
+//! grammar" section, extended in v0.2.0 to support OR and in v0.3.0 to
+//! support explicit parenthesised grouping.
 //!
 //! This module owns *only* the parse step: `&str → QueryNode`. Translating
 //! a `QueryNode` into SQL and binding parameters is the executor's job.
 //! Resolving relative time ranges like `last 2h` against wall-clock time
 //! is also the executor's job; the AST just carries the raw spec.
 //!
-//! # Grammar (v0.2.0)
+//! # Grammar (v0.3.0)
 //!
 //! ```text
 //! query     := or_expr
@@ -19,6 +18,7 @@
 //! clause    := field OP value
 //!            | field CONTAINS string
 //!            | TIME_RANGE
+//!            | "(" or_expr ")"
 //! field     := [a-zA-Z_][a-zA-Z0-9_.]*
 //! OP        := "=" | "!=" | ">" | "<"
 //! value     := string | number | bool
@@ -27,12 +27,11 @@
 //! duration  := number ("m" | "h" | "d")
 //! ```
 //!
-//! AND binds tighter than OR, matching SQL convention. So
-//! `level=error AND service=payments OR level=warn` parses as
-//! `(level=error AND service=payments) OR level=warn`.
+//! AND binds tighter than OR. With parentheses users can override precedence:
+//! `(level=error OR level=warn) AND service=payments`.
 //!
-//! Explicit grouping with `(` `)` is **not** supported in v0.2.0 — users
-//! work with operator precedence only. Parens are a candidate for v0.3.
+//! Without parens: `level=error AND service=payments OR level=warn` parses as
+//! `(level=error AND service=payments) OR level=warn`.
 
 use std::fmt;
 
@@ -78,6 +77,9 @@ pub enum Clause {
     /// resolve it (which allows us to accept multiple formats without
     /// teaching the grammar about any particular one).
     SinceDatetime(String),
+    /// `( or_expr )` — explicit grouping to override AND/OR precedence.
+    /// New in v0.3.0.
+    Group(Box<QueryNode>),
 }
 
 /// Comparison operator for `field OP value` clauses.
@@ -187,6 +189,8 @@ enum Token {
     NotEq,
     Gt,
     Lt,
+    LParen,
+    RParen,
 }
 
 #[derive(Debug, Clone)]
@@ -262,6 +266,24 @@ fn tokenize(input: &str) -> Result<Vec<SpannedToken>, QueryParseError> {
         if c == b'<' {
             out.push(SpannedToken {
                 token: Token::Lt,
+                position: i,
+            });
+            i += 1;
+            continue;
+        }
+
+        // Parentheses (v0.3.0).
+        if c == b'(' {
+            out.push(SpannedToken {
+                token: Token::LParen,
+                position: i,
+            });
+            i += 1;
+            continue;
+        }
+        if c == b')' {
+            out.push(SpannedToken {
+                token: Token::RParen,
                 position: i,
             });
             i += 1;
@@ -402,9 +424,10 @@ fn tokenize(input: &str) -> Result<Vec<SpannedToken>, QueryParseError> {
 
 /// Parse a query string into a `QueryNode`.
 ///
-/// This is the only public entry point. Implements the v0.2.0 grammar
+/// This is the only public entry point. Implements the v0.3.0 grammar
 /// top-down via recursive descent: `or_expr` at the outermost level,
-/// `and_expr` one level in, `clause` at the leaves.
+/// `and_expr` one level in, `clause` at the leaves (with optional paren
+/// recursion back to `or_expr`).
 pub fn parse(input: &str) -> Result<QueryNode, QueryParseError> {
     let tokens = tokenize(input)?;
     if tokens.is_empty() {
@@ -422,11 +445,16 @@ pub fn parse(input: &str) -> Result<QueryNode, QueryParseError> {
 
     // After a complete or_expr, the only acceptable state is end-of-input.
     // If a token remains, the user wrote something the grammar doesn't
-    // accept (commonly a missing AND/OR between clauses).
+    // accept (commonly a missing AND/OR between clauses, or an unmatched `)`).
     if let Some(extra) = p.peek() {
+        let message = if matches!(extra.token, Token::RParen) {
+            "unexpected ')' — no matching '('".to_string()
+        } else {
+            "expected 'AND' or 'OR' between clauses".to_string()
+        };
         return Err(QueryParseError {
             position: extra.position,
-            message: "expected 'AND' or 'OR' between clauses".to_string(),
+            message,
         });
     }
 
@@ -557,6 +585,39 @@ impl<'a> Parser<'a> {
             position: self.end_position(),
             message: "expected a clause, got end of input".to_string(),
         })?;
+
+        // Parenthesized subexpression: `(` or_expr `)`.
+        if matches!(&tok.token, Token::LParen) {
+            let open_pos = tok.position;
+            self.advance(); // consume `(`
+            let inner = self.parse_or_expr()?;
+            match self.peek() {
+                Some(close) if matches!(close.token, Token::RParen) => {
+                    self.advance(); // consume `)`
+                }
+                Some(close) => {
+                    return Err(QueryParseError {
+                        position: close.position,
+                        message: "expected ')' to close '('".to_string(),
+                    });
+                }
+                None => {
+                    return Err(QueryParseError {
+                        position: open_pos,
+                        message: "unclosed '(' — expected ')'".to_string(),
+                    });
+                }
+            }
+            return Ok(Clause::Group(Box::new(inner)));
+        }
+
+        // A `)` here without a matching `(` — error early with a targeted message.
+        if matches!(&tok.token, Token::RParen) {
+            return Err(QueryParseError {
+                position: tok.position,
+                message: "unexpected ')' — no matching '('".to_string(),
+            });
+        }
 
         // Time-range clauses are keyword-led.
         if let Token::Ident(s) = &tok.token {
@@ -786,7 +847,7 @@ fn token_len(t: &Token) -> usize {
     match t {
         Token::Ident(s) | Token::Number(s) => s.len(),
         Token::QuotedString(s) => s.len() + 2, // approximate, for error positioning only
-        Token::Eq | Token::Gt | Token::Lt => 1,
+        Token::Eq | Token::Gt | Token::Lt | Token::LParen | Token::RParen => 1,
         Token::NotEq => 2,
     }
 }
@@ -1452,6 +1513,137 @@ mod tests {
                     } => assert_eq!(*n, 100),
                     other => panic!("expected Integer value, got {other:?}"),
                 }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Parenthesized expressions — new in v0.3.0
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn paren_single_clause_wraps_in_group() {
+        // `(level=error)` — one clause inside parens
+        let node = parse("(level=error)").unwrap();
+        match &node {
+            QueryNode::Or(groups) => {
+                assert_eq!(groups.len(), 1);
+                assert_eq!(groups[0].clauses.len(), 1);
+                assert!(matches!(&groups[0].clauses[0], Clause::Group(_)));
+            }
+        }
+    }
+
+    #[test]
+    fn paren_or_inside_and_produces_single_and_group_with_group_clause() {
+        // `(level=error OR level=warn) AND service=payments`
+        // The paren subexpr becomes a Clause::Group inside one AND-group.
+        let node = parse("(level=error OR level=warn) AND service=payments").unwrap();
+        match &node {
+            QueryNode::Or(groups) => {
+                assert_eq!(groups.len(), 1, "outer OR has one AND-group");
+                let clauses = &groups[0].clauses;
+                assert_eq!(clauses.len(), 2, "AND-group: Group + Compare");
+                assert!(matches!(&clauses[0], Clause::Group(_)));
+                assert!(matches!(&clauses[1], Clause::Compare { .. }));
+                // Inner group has two OR branches.
+                if let Clause::Group(inner) = &clauses[0] {
+                    match inner.as_ref() {
+                        QueryNode::Or(inner_groups) => assert_eq!(inner_groups.len(), 2),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn paren_on_right_side_of_or_wraps_and_group() {
+        // `level=error OR (level=warn AND service=payments)`
+        let node = parse("level=error OR (level=warn AND service=payments)").unwrap();
+        match &node {
+            QueryNode::Or(groups) => {
+                assert_eq!(groups.len(), 2, "two OR branches");
+                // First branch: plain Compare
+                assert_eq!(groups[0].clauses.len(), 1);
+                assert!(matches!(&groups[0].clauses[0], Clause::Compare { .. }));
+                // Second branch: single Group clause containing an AND
+                assert_eq!(groups[1].clauses.len(), 1);
+                assert!(matches!(&groups[1].clauses[0], Clause::Group(_)));
+                if let Clause::Group(inner) = &groups[1].clauses[0] {
+                    match inner.as_ref() {
+                        QueryNode::Or(inner_groups) => {
+                            assert_eq!(inner_groups.len(), 1);
+                            assert_eq!(inner_groups[0].clauses.len(), 2);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nested_parens_parse_correctly() {
+        // `((level=error))` — double-nested, legal
+        assert!(parse("((level=error))").is_ok());
+    }
+
+    #[test]
+    fn paren_with_time_range_inside() {
+        // `(level=error AND last 1h) OR level=warn`
+        assert!(parse("(level=error AND last 1h) OR level=warn").is_ok());
+    }
+
+    #[test]
+    fn paren_keywords_inside_are_case_insensitive() {
+        assert!(parse("(level=error OR level=warn)").is_ok());
+        assert!(parse("(level=error or level=warn)").is_ok());
+        assert!(parse("(level=error Or level=warn)").is_ok());
+    }
+
+    #[test]
+    fn unmatched_close_paren_is_error() {
+        let err = parse("level=error)").unwrap_err();
+        assert!(
+            err.message.contains(')') || err.message.contains("matching"),
+            "message was: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn unclosed_open_paren_is_error() {
+        let err = parse("(level=error").unwrap_err();
+        assert!(
+            err.message.contains(')')
+                || err.message.contains("close")
+                || err.message.contains("unclosed"),
+            "message was: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn empty_parens_is_error() {
+        let err = parse("()").unwrap_err();
+        assert!(!err.message.is_empty());
+    }
+
+    #[test]
+    fn paren_after_and_parses() {
+        // `level=error AND (service=payments OR service=api)`
+        assert!(parse("level=error AND (service=payments OR service=api)").is_ok());
+    }
+
+    #[test]
+    fn multiple_paren_groups_joined_by_and() {
+        // `(a=1 OR b=2) AND (c=3 OR d=4)`
+        let node = parse("(a=1 OR b=2) AND (c=3 OR d=4)").unwrap();
+        match &node {
+            QueryNode::Or(groups) => {
+                assert_eq!(groups.len(), 1);
+                assert_eq!(groups[0].clauses.len(), 2);
+                assert!(matches!(&groups[0].clauses[0], Clause::Group(_)));
+                assert!(matches!(&groups[0].clauses[1], Clause::Group(_)));
             }
         }
     }
