@@ -43,6 +43,13 @@
 //! the emitter uniform — every AND-group is parenthesized, whether it
 //! came from the top-level OR or from an inner Group clause.
 //!
+//! # Pagination (v0.3.0)
+//!
+//! [`QueryOptions`] bundles `limit` and `offset` so callers can request a
+//! specific page of results without separate function variants. Offset
+//! without limit uses `LIMIT -1` — SQLite requires a `LIMIT` clause when
+//! `OFFSET` is present; `-1` means unlimited in SQLite.
+//!
 //! # Timestamp handling
 //!
 //! Timestamps are compared as TEXT, which works correctly for any ISO-8601
@@ -60,20 +67,35 @@ use crate::error::{LogdiveError, Result};
 use crate::query::{AndGroup, Clause, Duration, QueryNode, QueryValue};
 
 // ---------------------------------------------------------------------------
-// Public entry point
+// QueryOptions
+// ---------------------------------------------------------------------------
+
+/// Options controlling result set size and starting position for [`execute`].
+///
+/// `limit = None` means unlimited rows. `offset = None` means start from
+/// the first result. When offset is set without a limit the SQL uses
+/// `LIMIT -1` — SQLite requires a `LIMIT` clause whenever `OFFSET` appears;
+/// `-1` is the SQLite convention for "no cap".
+#[derive(Debug, Clone, Copy, Default)]
+pub struct QueryOptions {
+    /// Maximum number of rows to return. `None` = unlimited.
+    pub limit: Option<usize>,
+    /// Number of rows to skip from the front of the ordered result set.
+    /// `None` (or `Some(0)`) starts from the first row.
+    pub offset: Option<usize>,
+}
+
+// ---------------------------------------------------------------------------
+// Public entry points
 // ---------------------------------------------------------------------------
 
 /// Execute a parsed query against the index and return matching entries.
 ///
-/// `limit` caps the result set size; pass `None` for no limit. Results are
-/// ordered by `timestamp DESC, id DESC` (newest first, with row id as
-/// stable tiebreaker for identical timestamps).
-pub fn execute(
-    query: &QueryNode,
-    conn: &Connection,
-    limit: Option<usize>,
-) -> Result<Vec<LogEntry>> {
-    let (sql, binds) = build_sql(query, limit, Utc::now())?;
+/// Results are ordered by `timestamp DESC, id DESC` (newest first, with
+/// row id as stable tiebreaker for identical timestamps). Use
+/// [`QueryOptions`] to cap or page the result set.
+pub fn execute(query: &QueryNode, conn: &Connection, opts: QueryOptions) -> Result<Vec<LogEntry>> {
+    let (sql, binds) = build_sql(query, opts, Utc::now())?;
     run(conn, &sql, &binds)
 }
 
@@ -83,10 +105,10 @@ pub fn execute(
 pub fn execute_at(
     query: &QueryNode,
     conn: &Connection,
-    limit: Option<usize>,
+    opts: QueryOptions,
     now: DateTime<Utc>,
 ) -> Result<Vec<LogEntry>> {
-    let (sql, binds) = build_sql(query, limit, now)?;
+    let (sql, binds) = build_sql(query, opts, now)?;
     run(conn, &sql, &binds)
 }
 
@@ -101,7 +123,7 @@ type Bind = SqlValue;
 
 fn build_sql(
     query: &QueryNode,
-    limit: Option<usize>,
+    opts: QueryOptions,
     now: DateTime<Utc>,
 ) -> Result<(String, Vec<Bind>)> {
     let QueryNode::Or(groups) = query;
@@ -133,9 +155,22 @@ fn build_sql(
          WHERE {where_sql} \
          ORDER BY timestamp DESC, id DESC"
     );
-    if let Some(n) = limit {
-        sql.push_str(&format!(" LIMIT {n}"));
+
+    // SQLite requires LIMIT to be present when OFFSET is used.
+    // Emit `LIMIT -1` (unlimited) when the caller wants offset-only paging.
+    match (opts.limit, opts.offset) {
+        (Some(lim), Some(off)) if off > 0 => {
+            sql.push_str(&format!(" LIMIT {lim} OFFSET {off}"));
+        }
+        (Some(lim), _) => {
+            sql.push_str(&format!(" LIMIT {lim}"));
+        }
+        (None, Some(off)) if off > 0 => {
+            sql.push_str(&format!(" LIMIT -1 OFFSET {off}"));
+        }
+        _ => {}
     }
+
     Ok((sql, binds))
 }
 
@@ -358,12 +393,17 @@ mod tests {
     /// connection. Panics if parsing fails — tests pass well-formed input.
     fn run_query(conn: &Connection, q: &str) -> Vec<LogEntry> {
         let ast = parse(q).expect("test queries are well-formed");
-        execute(&ast, conn, None).expect("execute")
+        execute(&ast, conn, QueryOptions::default()).expect("execute")
+    }
+
+    fn run_query_opts(conn: &Connection, q: &str, opts: QueryOptions) -> Vec<LogEntry> {
+        let ast = parse(q).expect("test queries are well-formed");
+        execute(&ast, conn, opts).expect("execute")
     }
 
     fn run_query_at(conn: &Connection, q: &str, now: DateTime<Utc>) -> Vec<LogEntry> {
         let ast = parse(q).expect("test queries are well-formed");
-        execute_at(&ast, conn, None, now).expect("execute")
+        execute_at(&ast, conn, QueryOptions::default(), now).expect("execute")
     }
 
     fn make_entry(ts: &str, level: &str, message: &str) -> LogEntry {
@@ -417,7 +457,7 @@ mod tests {
     #[test]
     fn compare_on_known_field_binds_value_not_interpolates() {
         let ast = parse("level=error").unwrap();
-        let (sql, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        let (sql, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         // Always-parenthesized invariant: even single-clause queries are
         // wrapped in parens.
         assert!(sql.contains("WHERE (level = ?)"));
@@ -432,7 +472,7 @@ mod tests {
     #[test]
     fn compare_on_unknown_field_uses_json_extract() {
         let ast = parse("service=payments").unwrap();
-        let (sql, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        let (sql, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         assert!(sql.contains("json_extract(fields, '$.service')"));
         assert_eq!(binds.len(), 1);
     }
@@ -440,7 +480,7 @@ mod tests {
     #[test]
     fn contains_uses_like_with_escape_and_wildcards() {
         let ast = parse(r#"message contains "timeout""#).unwrap();
-        let (sql, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        let (sql, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         assert!(sql.contains("LIKE ? ESCAPE '\\'"));
         match &binds[0] {
             SqlValue::Text(s) => assert_eq!(s, "%timeout%"),
@@ -451,7 +491,7 @@ mod tests {
     #[test]
     fn contains_escapes_like_metacharacters() {
         let ast = parse(r#"message contains "50%""#).unwrap();
-        let (_, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        let (_, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         match &binds[0] {
             SqlValue::Text(s) => assert_eq!(s, r"%50\%%"),
             other => panic!("unexpected bind: {other:?}"),
@@ -462,7 +502,7 @@ mod tests {
     fn last_duration_produces_timestamp_lower_bound() {
         let ast = parse("last 2h").unwrap();
         let now = Utc.with_ymd_and_hms(2026, 4, 20, 12, 0, 0).unwrap();
-        let (sql, binds) = build_sql(&ast, None, now).unwrap();
+        let (sql, binds) = build_sql(&ast, QueryOptions::default(), now).unwrap();
         assert!(sql.contains("timestamp >= ?"));
         match &binds[0] {
             SqlValue::Text(s) => assert!(s.starts_with("2026-04-20T10:00:00")),
@@ -473,7 +513,7 @@ mod tests {
     #[test]
     fn since_accepts_rfc3339() {
         let ast = parse(r#"since "2024-01-01T10:00:00Z""#).unwrap();
-        let (sql, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        let (sql, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         assert!(sql.contains("timestamp >= ?"));
         match &binds[0] {
             SqlValue::Text(s) => assert!(s.starts_with("2024-01-01T10:00:00")),
@@ -484,7 +524,7 @@ mod tests {
     #[test]
     fn since_accepts_bare_date() {
         let ast = parse("since 2024-06-15").unwrap();
-        let (_, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        let (_, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         match &binds[0] {
             SqlValue::Text(s) => assert!(s.starts_with("2024-06-15T00:00:00")),
             other => panic!("unexpected: {other:?}"),
@@ -494,14 +534,14 @@ mod tests {
     #[test]
     fn since_rejects_garbage() {
         let ast = parse("since not-a-date").unwrap();
-        let err = build_sql(&ast, None, Utc::now()).unwrap_err();
+        let err = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap_err();
         assert!(matches!(err, LogdiveError::InvalidDatetime { .. }));
     }
 
     #[test]
     fn and_chain_joins_with_and_inside_a_single_group() {
         let ast = parse("level=error AND service=payments").unwrap();
-        let (sql, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        let (sql, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         assert!(sql.contains("level = ?"));
         assert!(sql.contains("json_extract(fields, '$.service') = ?"));
         // AND inside a single parenthesized group, no OR.
@@ -522,7 +562,7 @@ mod tests {
     #[test]
     fn integer_binds_as_integer_not_text() {
         let ast = parse("req_id > 100").unwrap();
-        let (_, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        let (_, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         match &binds[0] {
             SqlValue::Integer(n) => assert_eq!(*n, 100),
             other => panic!("expected integer bind, got {other:?}"),
@@ -532,29 +572,80 @@ mod tests {
     #[test]
     fn bool_binds_as_integer_zero_or_one() {
         let ast = parse("ok=true").unwrap();
-        let (_, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        let (_, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         assert!(matches!(binds[0], SqlValue::Integer(1)));
 
         let ast = parse("ok=false").unwrap();
-        let (_, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        let (_, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         assert!(matches!(binds[0], SqlValue::Integer(0)));
     }
 
     #[test]
     fn float_binds_as_real() {
         let ast = parse("duration < 1.5").unwrap();
-        let (_, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        let (_, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         match &binds[0] {
             SqlValue::Real(f) => assert!((f - 1.5).abs() < 1e-9),
             other => panic!("expected real bind, got {other:?}"),
         }
     }
 
+    // -----------------------------------------------------------------
+    // SQL generation — pagination (new in v0.3.0)
+    // -----------------------------------------------------------------
+
     #[test]
-    fn limit_appends_limit_clause() {
+    fn limit_only_appends_limit_clause() {
         let ast = parse("level=error").unwrap();
-        let (sql, _) = build_sql(&ast, Some(50), Utc::now()).unwrap();
-        assert!(sql.ends_with("LIMIT 50"));
+        let opts = QueryOptions {
+            limit: Some(50),
+            offset: None,
+        };
+        let (sql, _) = build_sql(&ast, opts, Utc::now()).unwrap();
+        assert!(sql.ends_with("LIMIT 50"), "sql: {sql}");
+    }
+
+    #[test]
+    fn offset_zero_treated_as_absent_no_suffix() {
+        let ast = parse("level=error").unwrap();
+        let opts = QueryOptions {
+            limit: None,
+            offset: Some(0),
+        };
+        let (sql, _) = build_sql(&ast, opts, Utc::now()).unwrap();
+        assert!(
+            sql.ends_with("DESC"),
+            "offset=0 must not append any suffix, sql: {sql}"
+        );
+    }
+
+    #[test]
+    fn offset_without_limit_uses_limit_neg1() {
+        let ast = parse("level=error").unwrap();
+        let opts = QueryOptions {
+            limit: None,
+            offset: Some(10),
+        };
+        let (sql, _) = build_sql(&ast, opts, Utc::now()).unwrap();
+        assert!(sql.ends_with("LIMIT -1 OFFSET 10"), "sql: {sql}");
+    }
+
+    #[test]
+    fn limit_and_offset_both_appended() {
+        let ast = parse("level=error").unwrap();
+        let opts = QueryOptions {
+            limit: Some(25),
+            offset: Some(50),
+        };
+        let (sql, _) = build_sql(&ast, opts, Utc::now()).unwrap();
+        assert!(sql.ends_with("LIMIT 25 OFFSET 50"), "sql: {sql}");
+    }
+
+    #[test]
+    fn no_limit_no_offset_produces_no_suffix() {
+        let ast = parse("level=error").unwrap();
+        let (sql, _) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
+        assert!(sql.ends_with("DESC"), "sql: {sql}");
     }
 
     // -----------------------------------------------------------------
@@ -564,7 +655,7 @@ mod tests {
     #[test]
     fn or_emits_two_parenthesized_groups_joined_by_or() {
         let ast = parse("level=error OR level=warn").unwrap();
-        let (sql, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        let (sql, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         // Two parenthesized AND-groups joined by ` OR `.
         assert!(sql.contains("WHERE (level = ?) OR (level = ?)"));
         // Bind order matches clause order across the OR boundary.
@@ -580,7 +671,7 @@ mod tests {
     #[test]
     fn or_with_three_groups_joins_with_two_or_keywords() {
         let ast = parse("level=error OR level=warn OR level=fatal").unwrap();
-        let (sql, _binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        let (sql, _binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         // Exactly two ` OR ` separators between three groups.
         assert_eq!(sql.matches(" OR ").count(), 2);
         // All three values appear bound (we rely on the matches above
@@ -592,7 +683,7 @@ mod tests {
     fn or_with_and_inside_each_group_emits_correct_shape() {
         // (level=error AND service=payments) OR (level=warn)
         let ast = parse("level=error AND service=payments OR level=warn").unwrap();
-        let (sql, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        let (sql, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         assert!(sql.contains(
             "WHERE (level = ? AND json_extract(fields, '$.service') = ?) OR (level = ?)"
         ));
@@ -613,7 +704,7 @@ mod tests {
         // (a=1 AND b=2) OR (c=3 AND d=4) — exercises bind ordering across
         // OR boundary with mixed integer values.
         let ast = parse("a=1 AND b=2 OR c=3 AND d=4").unwrap();
-        let (sql, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        let (sql, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         assert_eq!(sql.matches(" OR ").count(), 1);
         assert_eq!(binds.len(), 4);
         match (&binds[0], &binds[1], &binds[2], &binds[3]) {
@@ -638,7 +729,7 @@ mod tests {
         // Three groups, each with a different kind of clause.
         let ast = parse(r#"level=error OR message contains "timeout" OR last 30m"#).unwrap();
         let now = Utc.with_ymd_and_hms(2026, 4, 20, 12, 0, 0).unwrap();
-        let (sql, binds) = build_sql(&ast, None, now).unwrap();
+        let (sql, binds) = build_sql(&ast, QueryOptions::default(), now).unwrap();
         assert_eq!(sql.matches(" OR ").count(), 2);
         assert_eq!(binds.len(), 3);
 
@@ -656,7 +747,11 @@ mod tests {
     #[test]
     fn limit_applies_to_or_query_too() {
         let ast = parse("level=error OR level=warn").unwrap();
-        let (sql, _) = build_sql(&ast, Some(25), Utc::now()).unwrap();
+        let opts = QueryOptions {
+            limit: Some(25),
+            offset: None,
+        };
+        let (sql, _) = build_sql(&ast, opts, Utc::now()).unwrap();
         assert!(sql.ends_with("LIMIT 25"));
         // LIMIT is outside the WHERE clause.
         assert!(sql.contains(" ORDER BY "));
@@ -673,8 +768,10 @@ mod tests {
         // Both forms are semantically equivalent; binds must be identical.
         let paren_ast = parse("(level=error)").unwrap();
         let plain_ast = parse("level=error").unwrap();
-        let (paren_sql, paren_binds) = build_sql(&paren_ast, None, Utc::now()).unwrap();
-        let (plain_sql, plain_binds) = build_sql(&plain_ast, None, Utc::now()).unwrap();
+        let (paren_sql, paren_binds) =
+            build_sql(&paren_ast, QueryOptions::default(), Utc::now()).unwrap();
+        let (plain_sql, plain_binds) =
+            build_sql(&plain_ast, QueryOptions::default(), Utc::now()).unwrap();
         assert!(
             paren_sql.contains("WHERE ((level = ?))"),
             "paren form: {paren_sql}"
@@ -691,7 +788,7 @@ mod tests {
         // `(level=error OR level=warn) AND service=payments`
         // Expected WHERE shape: `(((level = ?) OR (level = ?)) AND json_extract(fields, '$.service') = ?)`
         let ast = parse("(level=error OR level=warn) AND service=payments").unwrap();
-        let (sql, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        let (sql, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         // The inner OR group must be parenthesized inside the outer AND group.
         assert!(sql.contains("((level = ?) OR (level = ?))"));
         assert!(sql.contains("json_extract(fields, '$.service') = ?"));
@@ -710,7 +807,7 @@ mod tests {
     fn paren_group_binds_are_in_clause_order() {
         // Bind values inside the paren group must precede the outer AND clause.
         let ast = parse("(a=1 OR b=2) AND c=3").unwrap();
-        let (_, binds) = build_sql(&ast, None, Utc::now()).unwrap();
+        let (_, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         assert_eq!(binds.len(), 3);
         match (&binds[0], &binds[1], &binds[2]) {
             (SqlValue::Integer(a), SqlValue::Integer(b), SqlValue::Integer(c)) => {
@@ -837,6 +934,78 @@ mod tests {
             Some(&Value::String("payments".into()))
         );
         assert_eq!(e.fields.get("req_id").and_then(|v| v.as_i64()), Some(100));
+    }
+
+    // -----------------------------------------------------------------
+    // Round-trip: pagination (new in v0.3.0)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn round_trip_limit_caps_result_count() {
+        // Fixture has 3 rows. limit=2 must return exactly 2.
+        let idx = fixture();
+        let rows = run_query_opts(
+            idx.connection(),
+            "level=error OR level=info",
+            QueryOptions {
+                limit: Some(2),
+                offset: None,
+            },
+        );
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn round_trip_offset_skips_leading_rows() {
+        // Fixture rows ordered newest-first: 12:00 (error), 11:00 (info), 10:00 (error).
+        // offset=1 must skip the 12:00 row and return the next two.
+        let idx = fixture();
+        let all = run_query(idx.connection(), "level=error OR level=info");
+        assert_eq!(all.len(), 3);
+
+        let paged = run_query_opts(
+            idx.connection(),
+            "level=error OR level=info",
+            QueryOptions {
+                limit: None,
+                offset: Some(1),
+            },
+        );
+        assert_eq!(paged.len(), 2);
+        // The skipped row is the newest one.
+        assert_eq!(paged[0].timestamp, all[1].timestamp);
+        assert_eq!(paged[1].timestamp, all[2].timestamp);
+    }
+
+    #[test]
+    fn round_trip_limit_and_offset_returns_page() {
+        // Fixture rows (newest-first): 12:00, 11:00, 10:00.
+        // limit=1 offset=1 should return only the 11:00 row.
+        let idx = fixture();
+        let rows = run_query_opts(
+            idx.connection(),
+            "level=error OR level=info",
+            QueryOptions {
+                limit: Some(1),
+                offset: Some(1),
+            },
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].timestamp.as_deref(), Some("2026-04-20T11:00:00Z"));
+    }
+
+    #[test]
+    fn round_trip_offset_beyond_result_set_returns_empty() {
+        let idx = fixture();
+        let rows = run_query_opts(
+            idx.connection(),
+            "level=error OR level=info",
+            QueryOptions {
+                limit: None,
+                offset: Some(100),
+            },
+        );
+        assert!(rows.is_empty());
     }
 
     // -----------------------------------------------------------------

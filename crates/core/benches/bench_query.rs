@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use tempfile::TempDir;
 
-use logdive_core::{Indexer, LogEntry, QueryNode, execute, parse_query};
+use logdive_core::{Indexer, LogEntry, QueryNode, QueryOptions, execute, parse_query};
 
 /// Fixture size for all query benchmarks. 100k rows is the project doc's
 /// latency target.
@@ -110,7 +110,15 @@ fn bench_known_field_equality(c: &mut Criterion) {
         let ast = parse(q);
         group.bench_function(BenchmarkId::from_parameter(label), |b| {
             b.iter(|| {
-                let rows = execute(&ast, indexer.connection(), Some(1_000)).expect("execute");
+                let rows = execute(
+                    &ast,
+                    indexer.connection(),
+                    QueryOptions {
+                        limit: Some(1_000),
+                        offset: None,
+                    },
+                )
+                .expect("execute");
                 // Black-box the row count so the optimizer doesn't elide
                 // the query. `rows.len()` is cheap and self-documenting.
                 assert!(rows.len() <= 1_000);
@@ -138,7 +146,15 @@ fn bench_json_field_equality(c: &mut Criterion) {
         let ast = parse(q);
         group.bench_function(BenchmarkId::from_parameter(label), |b| {
             b.iter(|| {
-                let rows = execute(&ast, indexer.connection(), Some(1_000)).expect("execute");
+                let rows = execute(
+                    &ast,
+                    indexer.connection(),
+                    QueryOptions {
+                        limit: Some(1_000),
+                        offset: None,
+                    },
+                )
+                .expect("execute");
                 assert!(rows.len() <= 1_000);
             });
         });
@@ -168,7 +184,15 @@ fn bench_contains(c: &mut Criterion) {
         let ast = parse(q);
         group.bench_function(BenchmarkId::from_parameter(label), |b| {
             b.iter(|| {
-                let rows = execute(&ast, indexer.connection(), Some(1_000)).expect("execute");
+                let rows = execute(
+                    &ast,
+                    indexer.connection(),
+                    QueryOptions {
+                        limit: Some(1_000),
+                        offset: None,
+                    },
+                )
+                .expect("execute");
                 assert!(rows.len() <= 1_000);
             });
         });
@@ -197,7 +221,15 @@ fn bench_and_chain(c: &mut Criterion) {
         let ast = parse(q);
         group.bench_function(BenchmarkId::from_parameter(label), |b| {
             b.iter(|| {
-                let rows = execute(&ast, indexer.connection(), Some(1_000)).expect("execute");
+                let rows = execute(
+                    &ast,
+                    indexer.connection(),
+                    QueryOptions {
+                        limit: Some(1_000),
+                        offset: None,
+                    },
+                )
+                .expect("execute");
                 assert!(rows.len() <= 1_000);
             });
         });

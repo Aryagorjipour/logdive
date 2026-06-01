@@ -16,7 +16,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use logdive_core::{LogEntry, LogFormat, Stats, execute, parse_query};
+use logdive_core::{LogEntry, LogFormat, QueryOptions, Stats, execute, parse_query};
 
 use crate::error::AppError;
 use crate::state::AppState;
@@ -68,7 +68,16 @@ pub async fn query_handler(
     tracing::debug!(query = %query_str, ?limit, "executing query over HTTP");
 
     let rows: Vec<LogEntry> = state
-        .with_connection(move |indexer| execute(&ast, indexer.connection(), limit))
+        .with_connection(move |indexer| {
+            execute(
+                &ast,
+                indexer.connection(),
+                QueryOptions {
+                    limit,
+                    offset: None,
+                },
+            )
+        })
         .await?;
 
     tracing::debug!(
