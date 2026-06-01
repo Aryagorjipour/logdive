@@ -1,0 +1,65 @@
+name: Security audit
+
+# Run daily and whenever Cargo.lock, Cargo.toml, or deny.toml change on main.
+# This workflow is informational — it does not block merges. Merge-blocking
+# supply-chain checks are handled by `cargo deny check` in ci.yml.
+on:
+  schedule:
+    - cron: "0 6 * * *" # 06:00 UTC daily
+  push:
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - "**/Cargo.toml"
+      - deny.toml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: audit
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --quiet
+
+      - name: Run audit
+        run: cargo audit
+
+  deny:
+    name: cargo deny check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: deny
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --quiet
+
+      - name: Run deny check
+        run: cargo deny check
