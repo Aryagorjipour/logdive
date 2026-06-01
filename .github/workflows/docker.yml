@@ -43,7 +43,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       # QEMU provides user-space emulation for arm64 on the amd64 runner.
       - name: Set up QEMU

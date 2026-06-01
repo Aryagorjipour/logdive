@@ -13,9 +13,8 @@ Rust workspace (edition 2024, MSRV 1.85). Ships two binaries:
 
 Library half: `logdive-core` is publishable as a standalone crate.
 
-Current version: **0.2.0** (released 2026-05-15).
-Next milestone: **0.2.1 hardening** (security tests, more coverage, supply-chain infra).
-Then: **0.3.0** (parens in queries, generated columns, distroless Docker).
+Current version: **0.2.1** (released 2026-06-01).
+Next milestone: **0.3.0** (parens in queries, generated columns, distroless Docker).
 
 ## Commands
 
@@ -65,8 +64,8 @@ CLI's crate path is `crates/cli/` but the **binary name and crate name are both 
 
 ## Git workflow
 
-- Integration branch per milestone series: e.g. `release/v0.2.1`.
-- One PR per milestone, squash-merged from `chore/v0.2.1/<slug>` or `feat/v0.3.0/<slug>` branches.
+- Integration branch per milestone series: e.g. `release/v0.3.0`.
+- One PR per milestone, squash-merged from `feat/v0.3.0/<slug>` or `chore/v0.3.0/<slug>` branches.
 - One final merge-commit PR `release/vX.Y.Z` → `main` ships the version.
 - Force-push with `--force-with-lease` only.
 - Conventional Commits format.
@@ -108,16 +107,18 @@ This codebase is ~10k lines. A full read of every file blows the context.
 - For multi-step milestones, work one file at a time; commit between files.
 - `/compact` early if a milestone is going to span many tool calls.
 
-## Test baseline (as of v0.2.0)
+## Test baseline (as of v0.2.1)
 
-330 tests passing across 7 test binaries:
+386 tests passing across 9 test binaries:
 
 - `cargo test -p logdive-core` — parsers, indexer, query, executor, follow.
+- `cargo test -p logdive-core --test security` — SQL injection, wildcard escaping, resource exhaustion.
+- `cargo test -p logdive-core --test functional` — proptest (arbitrary input, AST shape), cross-format dedup, concurrent ingest, UTF-8 edge cases.
 - `cargo test -p logdive --bin logdive` — CLI internals (render, stats, prune).
 - `cargo test -p logdive-api --lib` — handlers, router, error, state.
 - `cargo test -p logdive-api --test integration` — end-to-end HTTP via `oneshot`.
 
-New tests in v0.2.1 should bring total to ~400. Existing tests stay green.
+All 386 tests pass. No test may be deleted; regressions are blockers.
 
 ## What to do first in a new session
 
