@@ -173,31 +173,31 @@ import { CURRENT_VERSION } from '@data/roadmap';
       </dl>
       <CodeBlock id="api-q">
 <span class="prompt">$</span> curl <span class="str">'http://127.0.0.1:4000/query?q=level%3Derror&amp;limit=50'</span>
-<span class="cm">{"timestamp":"2026-05-21T14:02:31Z","level":"error","message":"..."}
-{"timestamp":"2026-05-21T14:02:33Z","level":"error","message":"..."}</span>
+<span class="cm">&#123;"timestamp":"2026-05-21T14:02:31Z","level":"error","message":"..."&#125;
+&#123;"timestamp":"2026-05-21T14:02:33Z","level":"error","message":"..."&#125;</span>
       </CodeBlock>
 
       <h3 id="api-stats">GET /stats</h3>
       <p>Returns aggregate metadata as a single JSON object.</p>
       <CodeBlock id="api-stats-ex">
-<span class="cm">{
+<span class="cm">&#123;
   "entries": 42317,
   "min_timestamp": "2026-03-14T08:22:01Z",
   "max_timestamp": "2026-04-22T19:45:03Z",
   "tags": [null, "api", "nginx", "payments", "worker"],
   "db_size_bytes": 8400000,
   "db_path": "/home/user/.logdive/index.db"
-}</span>
+&#125;</span>
       </CodeBlock>
 
       <h3 id="api-version">GET /version</h3>
       <p>Returns build version and supported capabilities. Never touches the database. Use as a liveness probe.</p>
       <CodeBlock id="api-version-ex">
-<span class="cm">{
+<span class="cm">&#123;
   "version": "{CURRENT_VERSION}",
   "formats": ["json", "logfmt", "plain"],
   "capabilities": ["query", "stats", "version"]
-}</span>
+&#125;</span>
       </CodeBlock>
     </section>
 
