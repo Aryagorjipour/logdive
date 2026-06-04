@@ -1,0 +1,37 @@
+---
+export interface Props {
+  title: string;
+  description: string;
+  activeNav?: 'docs' | 'about';
+}
+const { title, description, activeNav } = Astro.props;
+import { CURRENT_VERSION } from '@data/roadmap';
+import '../styles/tokens.css';
+import '../styles/global.css';
+import '../styles/components.css';
+import Header from '@components/Header.astro';
+import Footer from '@components/Footer.astro';
+---
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{title}</title>
+  <meta name="description" content={description} />
+  <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230E1419' stroke-width='1.5'><line x1='3' y1='8' x2='21' y2='8' opacity='0.4'/><line x1='3' y1='14' x2='21' y2='14' opacity='0.4'/><line x1='3' y1='20' x2='21' y2='20' opacity='0.4'/><path d='M20 4 Q 14 6 11 14 T 4 22' stroke-width='2' stroke-linecap='round'/><circle cx='4' cy='22' r='1.5' fill='%23B85D44' stroke='none'/></svg>" />
+  <script is:inline>
+    (function(){
+      try {
+        var t = localStorage.getItem('logdive-theme');
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      } catch(e){}
+    })();
+  </script>
+</head>
+<body>
+  <Header activeNav={activeNav} />
+  <slot />
+  <Footer version={CURRENT_VERSION} />
+</body>
+</html>

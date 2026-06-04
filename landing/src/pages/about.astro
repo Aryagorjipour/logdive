@@ -1,0 +1,61 @@
+---
+import Base from '@layouts/Base.astro';
+---
+<Base
+  title="About — logdive"
+  description="Why logdive exists, what it isn't, and who built it."
+  activeNav="about"
+>
+<main>
+
+  <section class="tight">
+    <div class="wrap">
+      <span class="eyebrow">About</span>
+      <h1>Why logdive exists<span style="color: var(--accent);">.</span></h1>
+    </div>
+  </section>
+
+  <section class="tight">
+    <div class="wrap">
+      <div class="two-col">
+
+        <div class="prose">
+          <p>Every backend engineer has hit the same wall. Something went wrong in production three hours ago, and now there's a 2&thinsp;GB log file on a box somewhere, and you need to know which requests failed and what they had in common.</p>
+          <p>The options have always been a spectrum, and the spectrum has always been bad. On one end: <code class="code-inline">grep</code> piped into <code class="code-inline">jq</code> piped into <code class="code-inline">awk</code>, a shell incantation you rebuild from scratch every incident. On the other end: a full observability stack — Loki, Datadog, an Elastic cluster — with monthly bills, ingestion limits, and an entire infrastructure surface you don't want to maintain for a side project, a small team, or a single VPS.</p>
+          <p>logdive sits in that gap. It's the smallest tool that gives you indexes, time ranges, and a real query language, without asking you to provision anything. You install one binary, you point it at a log file, you query it later. That's the whole product.</p>
+          <p>Most existing systems start from "we need to ingest at scale" and work backwards into a usability story. logdive starts from the shell pipeline you'd write if you weren't tired, and works forwards — keeping the surface area roughly equivalent to a CLI you already know, but giving it persistence, structured fields, and time semantics.</p>
+          <p>If logdive does its job, you stop writing the same five-stage <code class="code-inline">jq</code> filter every time, and you stop paying someone to host the logs from your hobby Postgres instance. That's all it's trying to do.</p>
+        </div>
+
+        <aside class="nongoals" id="non-goals">
+          <h3>What logdive is <em>not</em></h3>
+          <p class="muted" style="font-size: 13px; margin-bottom: var(--space-4);">Framed honestly, so nobody is surprised six months in. None of these are on the v1 roadmap and most are explicit non-goals forever.</p>
+          <ul>
+            <li>No authentication on the API. Run it on localhost.</li>
+            <li>No HTTP ingestion endpoint. logdive reads files and stdin.</li>
+            <li>No multi-machine index. One DB, one host.</li>
+            <li>No log shipping agents, no sidecar, no daemon.</li>
+            <li>No browser UI. The CLI is the UI.</li>
+            <li>No hosted version. None planned, ever.</li>
+          </ul>
+        </aside>
+
+      </div>
+    </div>
+  </section>
+
+  <section class="tight">
+    <div class="wrap">
+      <hr style="margin-bottom: var(--space-12);" />
+      <div style="max-width: 56ch;">
+        <span class="eyebrow">Built by</span>
+        <h2 style="font-size: 28px; margin-bottom: var(--space-4);">Arya Gorjipour</h2>
+        <p class="muted" style="font-size: 16px;">
+          logdive is built and maintained by <a class="link-underline" href="https://github.com/Aryagorjipour" rel="noopener">@Aryagorjipour</a>, an Iranian Rust engineer. Written in Rust 2024 edition, MSRV 1.85. No company, no funding, no roadmap deck — just an engineer who got tired of writing the same <code class="code-inline">jq</code> filter twice.
+        </p>
+      </div>
+    </div>
+  </section>
+
+</main>
+</Base>

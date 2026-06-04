@@ -1,0 +1,115 @@
+---
+import {
+  roadmapNow, roadmapNext, roadmapLater, shipped,
+  IN_PROGRESS_VERSION, ROADMAP_UPDATED,
+} from '@data/roadmap';
+
+function issueUrl(issue: number) {
+  return `https://github.com/Aryagorjipour/logdive/issues/${issue}`;
+}
+---
+
+<section id="status" aria-labelledby="status-h2">
+  <div class="wrap">
+    <header>
+      <span class="eyebrow">Project status</span>
+      <h2 id="status-h2">Project status.</h2>
+      <p class="meta">
+        <time datetime={ROADMAP_UPDATED}>Last updated {new Date(ROADMAP_UPDATED).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</time>
+        <span class="sep" aria-hidden="true">·</span>
+        <a href="https://github.com/Aryagorjipour/logdive/issues" rel="noopener">All issues on GitHub</a>
+      </p>
+    </header>
+
+    <div class="status-lanes">
+      <!-- NOW -->
+      <article class="status-lane" aria-labelledby="lane-now-h">
+        <h3 id="lane-now-h">Now</h3>
+        <p class="lane-desc">Active development. Currently building v{IN_PROGRESS_VERSION}.</p>
+        <ul>
+          {roadmapNow.length === 0
+            ? <li class="lane-empty">Nothing active right now.</li>
+            : roadmapNow.map(item => (
+              <li>
+                {item.issue
+                  ? <a href={issueUrl(item.issue)} rel="noopener">{item.title}</a>
+                  : <span class="item-title">{item.title}</span>
+                }
+                {item.description && <p class="item-desc">{item.description}</p>}
+              </li>
+            ))
+          }
+        </ul>
+      </article>
+
+      <!-- NEXT -->
+      <article class="status-lane" aria-labelledby="lane-next-h">
+        <h3 id="lane-next-h">Next</h3>
+        <p class="lane-desc">Planned for the next release or two. Likely to ship.</p>
+        <ul>
+          {roadmapNext.length === 0
+            ? <li class="lane-empty">Nothing queued yet.</li>
+            : roadmapNext.map(item => (
+              <li>
+                {item.issue
+                  ? <a href={issueUrl(item.issue)} rel="noopener">{item.title}</a>
+                  : <span class="item-title">{item.title}</span>
+                }
+                {item.versionTarget && <div class="item-meta">target: v{item.versionTarget}</div>}
+                {item.description && <p class="item-desc">{item.description}</p>}
+              </li>
+            ))
+          }
+        </ul>
+      </article>
+
+      <!-- LATER -->
+      <article class="status-lane" aria-labelledby="lane-later-h">
+        <h3 id="lane-later-h">Later</h3>
+        <p class="lane-desc">Under consideration. No timeline, may not happen.</p>
+        <ul>
+          {roadmapLater.length === 0
+            ? <li class="lane-empty">Nothing under consideration.</li>
+            : roadmapLater.map(item => (
+              <li>
+                {item.issue
+                  ? <a href={issueUrl(item.issue)} rel="noopener">{item.title}</a>
+                  : <span class="item-title">{item.title}</span>
+                }
+                {item.note && <div class="item-meta">{item.note}</div>}
+                {item.description && <p class="item-desc">{item.description}</p>}
+              </li>
+            ))
+          }
+        </ul>
+      </article>
+    </div>
+
+    <!-- SHIPPED -->
+    <div class="status-shipped">
+      <h3>Recently shipped</h3>
+      <p class="shipped-meta">
+        Full history in <a href="https://github.com/Aryagorjipour/logdive/blob/main/CHANGELOG.md" rel="noopener">CHANGELOG.md</a> on GitHub.
+      </p>
+      <ol id="shipped-list">
+        {shipped.map((release, i) => (
+          <li>
+            <details open={i === 0}>
+              <summary>
+                <span class="release-version">v{release.version}</span>
+                <span class="release-date">{new Date(release.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</span>
+              </summary>
+              <ul class="release-highlights">
+                {release.highlights.map(h => <li>{h}</li>)}
+              </ul>
+            </details>
+          </li>
+        ))}
+      </ol>
+    </div>
+
+    <p class="status-oos">
+      Looking for something that isn't here? Check the <a href={`${import.meta.env.BASE_URL}/about#non-goals`}>v1 non-goals</a> — some things are intentionally out of scope.
+    </p>
+  </div>
+</section>
