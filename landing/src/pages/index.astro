@@ -1,17 +1,198 @@
 ---
-
+import Base from '@layouts/Base.astro';
+import CodeBlock from '@components/CodeBlock.astro';
+import Tabs from '@components/Tabs.astro';
+import TerminalPreview from '@components/TerminalPreview.astro';
+import RoadmapStatus from '@components/RoadmapStatus.astro';
+import { CURRENT_VERSION } from '@data/roadmap';
+const base = import.meta.env.BASE_URL;
 ---
+<Base
+  title="logdive — jq with memory."
+  description="Self-hosted log query for engineers. Single binary, SQLite-backed, no daemon. Written in Rust. MIT OR Apache-2.0."
+>
+<main>
 
-<html lang="en">
-	<head>
-		<meta charset="utf-8" />
-		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-		<link rel="icon" href="/favicon.ico" />
-		<meta name="viewport" content="width=device-width" />
-		<meta name="generator" content={Astro.generator} />
-		<title>Astro</title>
-	</head>
-	<body>
-		<h1>Astro</h1>
-	</body>
-</html>
+  <!-- 1. HERO -->
+  <section class="hero">
+    <div class="hero-lines" aria-hidden="true"></div>
+    <div class="wrap">
+      <span class="eyebrow">v{CURRENT_VERSION} · MIT OR Apache-2.0</span>
+      <h1>jq with memory<span class="accent">.</span></h1>
+      <p class="hero-sub">Self-hosted log query for engineers who don't want a Datadog bill. Single binary, SQLite-backed, no daemon, no agent, no account.</p>
+      <div class="hero-cta">
+        <div class="install-code">
+          <span class="prompt">$</span>
+          <span id="hero-install-text">cargo install logdive</span>
+          <button class="copy-btn" type="button" data-copy-target="#hero-install-text" aria-label="Copy install command">Copy</button>
+        </div>
+        <a class="btn btn-ghost" href="https://github.com/Aryagorjipour/logdive" rel="noopener">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.2.8-.6v-2.1c-3.2.7-3.9-1.5-3.9-1.5-.5-1.4-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 1.7 2.7 1.2 3.4.9.1-.7.4-1.2.7-1.5-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2.9-.3 1.9-.4 2.9-.4s2 .1 2.9.4c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.7.8 1.2 1.9 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z"/></svg>
+          View on GitHub
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. QUERY LANGUAGE PREVIEW -->
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">The query language</span>
+        <h2>Filters that read like English. Time ranges that just work.</h2>
+        <p>Boolean expressions over fields, with first-class time windows and JSON path extraction. No regex required for the common case.</p>
+      </div>
+      <TerminalPreview />
+    </div>
+  </section>
+
+  <!-- 3. PERFORMANCE -->
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">Performance</span>
+        <h2>Fast enough that grep starts to feel slow.</h2>
+        <p>Measured on the project's own criterion suite against a 100k-row corpus. Your hardware will vary; the shape of the numbers won't.</p>
+      </div>
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-num">210<span class="unit">k lines/s</span></div>
+          <div class="stat-desc">Batched ingest throughput. Sustained, not peak.</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-num">166<span class="unit">k lines/s</span></div>
+          <div class="stat-desc">End-to-end parse + ingest, JSON in, indexed out.</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-num">17<span class="unit">µs</span></div>
+          <div class="stat-desc">Indexed-field query against 100k rows.</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-num">3.6<span class="unit">ms</span></div>
+          <div class="stat-desc">json_extract field query against 100k rows.</div>
+        </div>
+      </div>
+      <p class="muted" style="margin-top: var(--space-6); font-size: 14px;">
+        Full-table <code class="code-inline">CONTAINS</code> scans land at 36–40&thinsp;ms over 100k rows. Run <code class="code-inline">cargo bench</code> for your own baseline.
+      </p>
+    </div>
+  </section>
+
+  <!-- 4. PILLARS -->
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">What you get</span>
+        <h2>Three things, done well.</h2>
+      </div>
+      <div class="pillar-grid">
+        <div class="pillar">
+          <svg width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+            <rect x="6" y="9" width="20" height="16" rx="1.5"/>
+            <line x1="6" y1="14" x2="26" y2="14"/>
+            <circle cx="10" cy="11.5" r="0.8" fill="currentColor"/>
+            <circle cx="13" cy="11.5" r="0.8" fill="currentColor"/>
+          </svg>
+          <h3>Local-first</h3>
+          <p>One binary, one SQLite file. No daemon to babysit, no cloud account to authorize, no agent to ship logs anywhere. Your data stays on the machine that produced it.</p>
+        </div>
+        <div class="pillar">
+          <svg width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 22 L12 14 L17 19 L26 8"/>
+            <path d="M20 8 L26 8 L26 14"/>
+          </svg>
+          <h3>Fast queries</h3>
+          <p>SQLite handles the storage. blake3 deduplicates content hashes. <code class="code-inline">json_extract</code> reaches into structured payloads without re-parsing. Microsecond reads on indexed fields.</p>
+        </div>
+        <div class="pillar">
+          <svg width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
+            <path d="M8 8 L24 8"/><path d="M8 16 L20 16"/><path d="M8 24 L16 24"/>
+            <path d="M28 6 L26 8 L28 10"/><path d="M28 14 L26 16 L28 18"/><path d="M28 22 L26 24 L28 26"/>
+          </svg>
+          <h3>Multi-format ingestion</h3>
+          <p>JSON for the modern stack. logfmt for the old guard. Plain text for everything else. logdive sniffs the format per-line and normalizes into a single queryable shape.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. ARCHITECTURE -->
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">Architecture</span>
+        <h2>A three-crate workspace.</h2>
+        <p>The core does the work. The CLI is a thin wrapper. The API is read-only and optional. You can use one without the other two.</p>
+      </div>
+      <CodeBlock id="arch-tree" maxWidth="720px">
+<span class="cm">// Cargo workspace</span>
+logdive/
+├── <span class="kw">logdive-core</span>     <span class="cm">// ingestion, query parser, SQLite layer</span>
+├── <span class="kw">logdive</span>          <span class="cm">// CLI binary — 3.7 MB stripped</span>
+└── <span class="kw">logdive-api</span>      <span class="cm">// read-only HTTP server — 4.1 MB stripped</span>
+      </CodeBlock>
+    </div>
+  </section>
+
+  <!-- 6. COMPARISON -->
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">When to reach for logdive</span>
+        <h2>And, more importantly, when not to.</h2>
+      </div>
+      <div class="compare">
+        <p>logdive is for one machine — a laptop, a VPS, a single Kubernetes node. You point it at log files or a stdin stream, you query them later. That's the whole product. It replaces the loop of <code class="code-inline">grep | jq | awk</code> with something that has indexes and time ranges.</p>
+        <p><strong>Loki</strong> is the right answer when you have a fleet and you're already running Prometheus. <strong>Datadog</strong> is the right answer when someone else is paying the bill and you want a polished UI. <strong>Elastic</strong> is the right answer when you need full-text search at scale and have an ops team to run the cluster.</p>
+        <p>logdive is what you reach for in the gap below all of that — when the alternative isn't another observability platform, it's a fifteen-line shell pipeline that you'd rather not write again.</p>
+        <p class="honest"><strong>Honest limit:</strong> if you have more than one machine producing logs, logdive is the wrong tool. There is no clustering, no cross-host index, no shipping protocol. Use Loki.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7. PROJECT STATUS -->
+  <RoadmapStatus />
+
+  <!-- 8. INSTALLATION -->
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">Get it</span>
+        <h2>Install in one command.</h2>
+        <p>Pick whichever your build pipeline already understands.</p>
+      </div>
+      <Tabs tabs={[
+        { id: 'cargo', label: 'cargo' },
+        { id: 'docker', label: 'docker' },
+        { id: 'source', label: 'from source' },
+      ]}>
+        <div class="tab-panel is-active" data-panel="cargo">
+          <CodeBlock id="cargo-install">
+<span class="prompt">$</span> cargo install logdive
+<span class="prompt">$</span> cargo install logdive-api  <span class="cm"># optional, for the HTTP server</span>
+          </CodeBlock>
+        </div>
+        <div class="tab-panel" data-panel="docker">
+          <CodeBlock id="docker-install">
+<span class="prompt">$</span> docker pull ghcr.io/aryagorjipour/logdive:{CURRENT_VERSION}
+<span class="prompt">$</span> docker run -d \
+    --name logdive \
+    -v logdive-data:/data \
+    -p 4000:4000 \
+    ghcr.io/aryagorjipour/logdive:{CURRENT_VERSION}
+          </CodeBlock>
+        </div>
+        <div class="tab-panel" data-panel="source">
+          <CodeBlock id="source-install">
+<span class="prompt">$</span> git clone https://github.com/Aryagorjipour/logdive
+<span class="prompt">$</span> cd logdive
+<span class="prompt">$</span> cargo build --release
+<span class="prompt">$</span> ./target/release/logdive --version
+          </CodeBlock>
+        </div>
+      </Tabs>
+    </div>
+  </section>
+
+</main>
+</Base>
