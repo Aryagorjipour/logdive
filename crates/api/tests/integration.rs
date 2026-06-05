@@ -558,3 +558,83 @@ async fn query_response_entries_include_raw_field() {
         "`raw` field must be non-empty"
     );
 }
+
+// ---------------------------------------------------------------------------
+// GET /query — pagination (?offset=)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn query_with_offset_skips_leading_rows() {
+    // 3-row fixture, newest-first: 12:00, 11:00, 10:00.
+    // offset=1 skips the 12:00 row and returns the remaining two.
+    let (_dir, db) = populated_db();
+    let router = app(db);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .uri("/query?q=since+2020-01-01&offset=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rows = parse_ndjson(&body_text(resp).await);
+    assert_eq!(rows.len(), 2, "offset=1 must skip the first row");
+    assert_eq!(
+        rows[0]["timestamp"], "2026-04-20T11:00:00Z",
+        "first returned row after offset must be the second newest"
+    );
+}
+
+#[tokio::test]
+async fn query_with_limit_and_offset_returns_correct_page() {
+    // offset=1&limit=1 on 3 rows: skip the 12:00 row, return only 11:00.
+    let (_dir, db) = populated_db();
+    let router = app(db);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .uri("/query?q=since+2020-01-01&limit=1&offset=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rows = parse_ndjson(&body_text(resp).await);
+    assert_eq!(
+        rows.len(),
+        1,
+        "limit=1&offset=1 must return exactly one row"
+    );
+    assert_eq!(rows[0]["timestamp"], "2026-04-20T11:00:00Z");
+}
+
+#[tokio::test]
+async fn query_with_offset_beyond_result_set_returns_empty() {
+    let (_dir, db) = populated_db();
+    let router = app(db);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .uri("/query?q=since+2020-01-01&offset=100")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rows = parse_ndjson(&body_text(resp).await);
+    assert_eq!(
+        rows.len(),
+        0,
+        "offset past end of result set must return empty"
+    );
+}

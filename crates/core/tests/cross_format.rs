@@ -95,7 +95,12 @@ fn plain_entry_with_explicit_timestamp_is_inserted_and_queryable() {
     assert_eq!(stats.skipped_no_timestamp, 0);
 
     let ast = logdive_core::parse_query(r#"message contains "startup""#).unwrap();
-    let results = logdive_core::execute(&ast, idx.connection(), None).unwrap();
+    let results = logdive_core::execute(
+        &ast,
+        idx.connection(),
+        logdive_core::QueryOptions::default(),
+    )
+    .unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].message.as_deref().unwrap().contains("startup"));
 }

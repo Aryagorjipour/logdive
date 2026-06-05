@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use tempfile::TempDir;
 
-use logdive_core::{Indexer, LogEntry, QueryNode, execute, parse_query};
+use logdive_core::{Indexer, LogEntry, QueryNode, QueryOptions, execute, parse_query};
 
 /// Fixture size for all query benchmarks. 100k rows is the project doc's
 /// latency target.
@@ -110,7 +110,15 @@ fn bench_known_field_equality(c: &mut Criterion) {
         let ast = parse(q);
         group.bench_function(BenchmarkId::from_parameter(label), |b| {
             b.iter(|| {
-                let rows = execute(&ast, indexer.connection(), Some(1_000)).expect("execute");
+                let rows = execute(
+                    &ast,
+                    indexer.connection(),
+                    QueryOptions {
+                        limit: Some(1_000),
+                        offset: None,
+                    },
+                )
+                .expect("execute");
                 // Black-box the row count so the optimizer doesn't elide
                 // the query. `rows.len()` is cheap and self-documenting.
                 assert!(rows.len() <= 1_000);
@@ -138,7 +146,15 @@ fn bench_json_field_equality(c: &mut Criterion) {
         let ast = parse(q);
         group.bench_function(BenchmarkId::from_parameter(label), |b| {
             b.iter(|| {
-                let rows = execute(&ast, indexer.connection(), Some(1_000)).expect("execute");
+                let rows = execute(
+                    &ast,
+                    indexer.connection(),
+                    QueryOptions {
+                        limit: Some(1_000),
+                        offset: None,
+                    },
+                )
+                .expect("execute");
                 assert!(rows.len() <= 1_000);
             });
         });
@@ -168,7 +184,15 @@ fn bench_contains(c: &mut Criterion) {
         let ast = parse(q);
         group.bench_function(BenchmarkId::from_parameter(label), |b| {
             b.iter(|| {
-                let rows = execute(&ast, indexer.connection(), Some(1_000)).expect("execute");
+                let rows = execute(
+                    &ast,
+                    indexer.connection(),
+                    QueryOptions {
+                        limit: Some(1_000),
+                        offset: None,
+                    },
+                )
+                .expect("execute");
                 assert!(rows.len() <= 1_000);
             });
         });
@@ -197,8 +221,185 @@ fn bench_and_chain(c: &mut Criterion) {
         let ast = parse(q);
         group.bench_function(BenchmarkId::from_parameter(label), |b| {
             b.iter(|| {
-                let rows = execute(&ast, indexer.connection(), Some(1_000)).expect("execute");
+                let rows = execute(
+                    &ast,
+                    indexer.connection(),
+                    QueryOptions {
+                        limit: Some(1_000),
+                        offset: None,
+                    },
+                )
+                .expect("execute");
                 assert!(rows.len() <= 1_000);
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_or_queries(c: &mut Criterion) {
+    let tmp = TempDir::new().expect("tempdir");
+    let path = setup_index(&tmp);
+    let indexer = Indexer::open_read_only(&path).expect("open read-only");
+
+    let mut group = c.benchmark_group("query/or");
+
+    // Two-branch OR — ~50% of rows match (error ∪ warn).
+    let scenarios = [
+        ("two_branch_50pct", "level=error OR level=warn"),
+        // Four-branch OR — nearly 100% of rows (all four level values).
+        (
+            "four_branch_100pct",
+            "level=error OR level=warn OR level=info OR level=debug",
+        ),
+        // OR across JSON fields — each branch hits json_extract.
+        ("json_two_branch", "service=payments OR service=auth"),
+    ];
+
+    for (label, q) in scenarios {
+        let ast = parse(q);
+        group.bench_function(BenchmarkId::from_parameter(label), |b| {
+            b.iter(|| {
+                let rows = execute(
+                    &ast,
+                    indexer.connection(),
+                    QueryOptions {
+                        limit: Some(1_000),
+                        offset: None,
+                    },
+                )
+                .expect("execute");
+                assert!(rows.len() <= 1_000);
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_paren_group(c: &mut Criterion) {
+    let tmp = TempDir::new().expect("tempdir");
+    let path = setup_index(&tmp);
+    let indexer = Indexer::open_read_only(&path).expect("open read-only");
+
+    let mut group = c.benchmark_group("query/paren_group");
+
+    // Parenthesised OR inside an AND — exercises the Clause::Group path.
+    let scenarios = [
+        // ~12.5% selectivity: (error ∪ warn) ∩ payments.
+        (
+            "or_inside_and_12pct",
+            "(level=error OR level=warn) AND service=payments",
+        ),
+        // Mixed JSON fields inside parens.
+        (
+            "json_or_inside_and",
+            "(service=payments OR service=auth) AND level=error",
+        ),
+        // Nested: paren group ANDed with a CONTAINS — hits the LIKE scan.
+        (
+            "or_and_contains",
+            r#"(level=error OR level=warn) AND message contains "event""#,
+        ),
+    ];
+
+    for (label, q) in scenarios {
+        let ast = parse(q);
+        group.bench_function(BenchmarkId::from_parameter(label), |b| {
+            b.iter(|| {
+                let rows = execute(
+                    &ast,
+                    indexer.connection(),
+                    QueryOptions {
+                        limit: Some(1_000),
+                        offset: None,
+                    },
+                )
+                .expect("execute");
+                assert!(rows.len() <= 1_000);
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_case_insensitive_level(c: &mut Criterion) {
+    let tmp = TempDir::new().expect("tempdir");
+    let path = setup_index(&tmp);
+    let indexer = Indexer::open_read_only(&path).expect("open read-only");
+
+    let mut group = c.benchmark_group("query/case_insensitive_level");
+
+    // All three forms should hit the idx_level_norm functional index and
+    // produce identical result sets (~25% of rows each).
+    let scenarios = [
+        ("lowercase", "level=error"),
+        ("uppercase", "level=ERROR"),
+        ("mixed_case", "level=Error"),
+    ];
+
+    for (label, q) in scenarios {
+        let ast = parse(q);
+        group.bench_function(BenchmarkId::from_parameter(label), |b| {
+            b.iter(|| {
+                let rows = execute(
+                    &ast,
+                    indexer.connection(),
+                    QueryOptions {
+                        limit: Some(1_000),
+                        offset: None,
+                    },
+                )
+                .expect("execute");
+                assert_eq!(rows.len(), 1_000);
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_pagination(c: &mut Criterion) {
+    let tmp = TempDir::new().expect("tempdir");
+    let path = setup_index(&tmp);
+    let indexer = Indexer::open_read_only(&path).expect("open read-only");
+
+    let mut group = c.benchmark_group("query/pagination");
+
+    // Compare first page vs deep page on a high-selectivity query.
+    let ast = parse("level=error");
+    let scenarios: &[(&str, QueryOptions)] = &[
+        (
+            "page_1_limit_50",
+            QueryOptions {
+                limit: Some(50),
+                offset: None,
+            },
+        ),
+        (
+            "page_2_limit_50_offset_50",
+            QueryOptions {
+                limit: Some(50),
+                offset: Some(50),
+            },
+        ),
+        (
+            "page_50_limit_50_offset_2450",
+            QueryOptions {
+                limit: Some(50),
+                offset: Some(2_450),
+            },
+        ),
+    ];
+
+    for (label, opts) in scenarios {
+        let opts = *opts;
+        group.bench_function(BenchmarkId::from_parameter(*label), |b| {
+            b.iter(|| {
+                let rows = execute(&ast, indexer.connection(), opts).expect("execute");
+                assert!(rows.len() <= 50);
             });
         });
     }
@@ -211,6 +412,10 @@ criterion_group!(
     bench_known_field_equality,
     bench_json_field_equality,
     bench_contains,
-    bench_and_chain
+    bench_and_chain,
+    bench_or_queries,
+    bench_paren_group,
+    bench_case_insensitive_level,
+    bench_pagination,
 );
 criterion_main!(benches);

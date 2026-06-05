@@ -12,7 +12,7 @@
     <div class="note">All errors from the payments service in the last 2 hours.</div>
 
     <div class="cmd">
-      <span class="prompt">$</span>logdive query <span class="str">'level=error OR level=warn'</span> --format json
+      <span class="prompt">$</span>logdive query <span class="str">'(level=error OR level=warn) AND service=payments'</span> --output json
     </div>
     <div class="note">Pipe results downstream — output is line-delimited JSON.</div>
 

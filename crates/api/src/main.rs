@@ -67,6 +67,17 @@ struct Cli {
     /// value takes precedence when both are provided.
     #[arg(long, value_name = "ORIGINS", env = "LOGDIVE_API_CORS_ORIGINS")]
     cors_origins: Option<String>,
+
+    /// Run a TCP connectivity check against the server's own port and exit.
+    ///
+    /// Exits 0 if the port is reachable, 1 otherwise. Never starts the HTTP
+    /// server. Intended for Docker `HEALTHCHECK` — a pure-stdlib alternative
+    /// to `curl` that works in distroless images with no shell or tools.
+    ///
+    /// Example:
+    ///   HEALTHCHECK CMD ["/usr/local/bin/logdive-api", "--health-check"]
+    #[arg(long)]
+    health_check: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +88,10 @@ struct Cli {
 async fn main() -> Result<()> {
     init_tracing();
     let cli = Cli::parse();
+
+    if cli.health_check {
+        run_health_check(cli.port);
+    }
 
     // Validate CORS config before touching the filesystem — a bad origin
     // string is a configuration error that should surface immediately, not
@@ -146,6 +161,27 @@ async fn main() -> Result<()> {
 
     tracing::info!("logdive-api shutdown complete");
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Health check
+// ---------------------------------------------------------------------------
+
+/// TCP-connect to the server's own port and exit the process.
+///
+/// Exits 0 when the connection succeeds, 1 when it fails. No HTTP request is
+/// made — a successful TCP accept is enough to confirm the server is up. This
+/// is intentional: it avoids importing an HTTP client and keeps the health
+/// check dependency-free and shell-free for distroless container images.
+fn run_health_check(port: u16) -> ! {
+    use std::net::TcpStream;
+    match TcpStream::connect(("127.0.0.1", port)) {
+        Ok(_) => std::process::exit(0),
+        Err(e) => {
+            eprintln!("health check failed (port {port}): {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

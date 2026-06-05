@@ -8,17 +8,20 @@
 - **crates.io**: https://crates.io/crates/logdive (CLI), https://crates.io/crates/logdive-api, https://crates.io/crates/logdive-core
 - **Docs**: https://docs.rs/logdive-core
 - **Docker registry**: ghcr.io/aryagorjipour/logdive
-- **Current version**: 0.2.1 (released 2026-06-01)
-- **Next planned**: v0.3.0
+- **Landing page**: https://aryagorjipour.github.io/logdive/ (GitHub Pages, Astro 5)
+- **Current version**: 0.3.0 (released 2026-06-05)
+- **Next planned**: v0.4.0 (performance / benchmarks / speed focus)
+- **Long-term target**: v1.0.0 (stable API + complete docs) → triggers Show HN
 
 ## What it is
 
 logdive is a single-binary structured log query engine. You point it at a JSON,
 logfmt, or plain-text log file; it parses and indexes every line into a local
 SQLite database; you query with a typed expression language that supports AND,
-OR, field comparisons, substring search, and relative or absolute time ranges.
-A companion binary (`logdive-api`) exposes the same query capability as a
-read-only HTTP server. No infrastructure, no daemons, no cloud accounts.
+OR, parenthesised groups, field comparisons, substring search, and relative or
+absolute time ranges. A companion binary (`logdive-api`) exposes the same query
+capability as a read-only HTTP server. No infrastructure, no daemons, no cloud
+accounts.
 
 ## Target user
 
@@ -56,17 +59,40 @@ rather than "like generics but different."
 or any service that blocks access from Iran. Prefer Fly.io, Hetzner,
 Cloudflare, self-hosted, crates.io, GHCR.
 
+**Strategic purpose**: logdive is Arya's Rust flagship — the primary evidence
+artifact for UK Global Talent / EU consulting / international hiring
+conversations over 2–3 years. Treat quality and public reputation seriously;
+scope creep, half-shipped features, or mediocre docs are particularly costly.
+
+## Versioning path
+
+| Version | Focus | Status |
+|---|---|---|
+| v0.1.0 | Initial release — ingest, query, stats, HTTP API | shipped 2026-04-19 |
+| v0.2.0 | OR queries, logfmt, follow mode, prune, CORS, Docker | shipped 2026-05-15 |
+| v0.2.1 | Security tests, functional tests, supply-chain hardening | shipped 2026-06-01 |
+| v0.3.0 | Parens, pagination, case-insensitive level, distroless | shipped 2026-06-05 |
+| v0.4.0 | Performance / benchmarks / speed | in planning |
+| v1.0.0 | Stable API + complete docs → Show HN trigger | target ~2027-03-31 |
+
+Show HN is deferred to v1.0.0. Article-first strategy (dev.to) to build
+audience before the launch. v2+ ideas (plugin system, marketplace) are captured
+privately and will not move to active milestones until v1.0.0 ships and real
+user feedback exists.
+
 ## Non-goals (permanent)
 
 These will not be implemented. Do not propose them without explicit re-opening
 by Arya:
 
-- **Parenthesised query expressions** — deferred to v0.3.0 (not permanent)
 - **Authentication on the HTTP API** — the API trusts its network layer; auth
   belongs in a reverse proxy in front of it
 - **Ingestion over HTTP** — the API is read-only by design; CLI handles writes
 - **Multi-machine or networked indexes** — single-host only; no replication
+- **Real-time analytics or aggregation at scale** — logdive is a query tool,
+  not a streaming analytics engine; use Loki or ClickHouse
 - **Log shipping, agents, or daemons** — logdive is a tool you invoke, not a
   service that runs continuously
 - **A browser UI** — curl and the CLI are the intended interfaces; third parties
   can build UIs against the HTTP API
+- **A hosted version** — none planned, ever

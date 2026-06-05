@@ -6,7 +6,7 @@
 //! tests verify the outer wall — what a caller of the library experiences when
 //! passing adversarial input through the full parse → execute path.
 
-use logdive_core::{Indexer, LogEntry, execute, parse_query};
+use logdive_core::{Indexer, LogEntry, QueryOptions, execute, parse_query};
 
 fn make_entry(ts: &str, level: &str, message: &str) -> LogEntry {
     let raw = format!(r#"{{"timestamp":"{ts}","level":"{level}","message":"{message}"}}"#);
@@ -56,7 +56,7 @@ fn value_injection_does_not_drop_table() {
     // The quoted value is a DROP TABLE payload. The executor binds it as a
     // parameter; SQLite never evaluates it as SQL text.
     let ast = parse_query(r#"level="'; DROP TABLE log_entries--""#).unwrap();
-    let results = execute(&ast, idx.connection(), None).unwrap();
+    let results = execute(&ast, idx.connection(), QueryOptions::default()).unwrap();
     assert!(
         results.is_empty(),
         "adversarial value must not match the real row"
@@ -79,7 +79,7 @@ fn value_injection_yields_zero_results_not_all_rows() {
     .unwrap();
 
     let ast = parse_query(r#"level="1=1 OR 1=1""#).unwrap();
-    let results = execute(&ast, idx.connection(), None).unwrap();
+    let results = execute(&ast, idx.connection(), QueryOptions::default()).unwrap();
     assert!(
         results.is_empty(),
         "injection payload must not widen the result set"
@@ -100,7 +100,7 @@ fn like_underscore_in_contains_is_literal() {
     .unwrap();
 
     let ast = parse_query(r#"message contains "warn_threshold""#).unwrap();
-    let results = execute(&ast, idx.connection(), None).unwrap();
+    let results = execute(&ast, idx.connection(), QueryOptions::default()).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].message.as_deref().unwrap().contains('_'));
 }
@@ -119,7 +119,7 @@ fn like_backslash_in_contains_is_literal() {
     // Raw string: the backslashes here are Rust literal backslashes, which
     // the query parser also treats as literal (no escape handling in v0.2).
     let ast = parse_query(r#"message contains "path\to""#).unwrap();
-    let results = execute(&ast, idx.connection(), None).unwrap();
+    let results = execute(&ast, idx.connection(), QueryOptions::default()).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].message.as_deref().unwrap().contains('\\'));
 }
@@ -141,7 +141,7 @@ fn deep_or_1000_disjuncts_does_not_overflow() {
     // execute may return Err (SQLite's SQLITE_MAX_EXPR_DEPTH limit fires at
     // 1000 disjuncts) but must never panic or overflow the stack. The
     // no-panic guarantee is the security property being tested here.
-    let _ = execute(&ast, idx.connection(), None);
+    let _ = execute(&ast, idx.connection(), QueryOptions::default());
 }
 
 #[test]

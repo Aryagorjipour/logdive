@@ -7,13 +7,15 @@ Known pitfalls. Each section is one trap.
 ## tower-http ↔ axum version coupling
 
 `tower-http` and `axum` share the same `tower` trait objects and `http` types
-internally. They must be version-compatible with each other. In v0.2.1:
+internally. They must be version-compatible with each other. As of v0.3.0:
 `axum = "0.7"` + `tower-http = "0.6"` + `tower = "0.4"`. Bumping any one of
 these can break compilation with type-mismatch errors on `Service` impls or
 `Body` types. When bumping axum, always check tower-http's changelog for the
 required matching version. Note that `tower-http` is declared directly in
 `crates/api/Cargo.toml` (not inherited from workspace), so a workspace-level
 axum bump must be accompanied by a manual tower-http bump in api's Cargo.toml.
+As of v0.3.0: `axum = "0.7"` + `tower-http = "0.6"` + `tower = "0.5"`.
+(tower was bumped from 0.4 → 0.5 in v0.3.0 to unify with axum's transitive dep.)
 
 ---
 
@@ -79,9 +81,8 @@ assume the file already exists. If you're adding a new startup flow, call
 
 The workspace sets `rust-version = "1.85"` and CI runs a dedicated `msrv` job
 that builds on exactly 1.85. Features stabilized after 1.85 will fail this job.
-This includes: `std::iter::repeat_n` (stabilized in 1.82, so OK), but patterns
-from later releases are not. When adopting a new language feature, verify it
-was stable in 1.85 by checking the Rust release notes.
+When adopting a new language feature, verify it was stable in 1.85 by checking
+the Rust release notes.
 
 ---
 
@@ -115,20 +116,41 @@ are per-branch. A new branch on its first push will always be cold.
 
 ---
 
-## docker.yml uses actions/checkout@v6 (does not exist)
+## Distroless runtime — no shell, no curl, no RUN in runtime stage
 
-As of v0.2.1, `docker.yml` line 49 uses `actions/checkout@v6` while all other
-workflows use `@v4`. There is no v6 release; the workflow would fail on a
-fresh run. The correct version is `actions/checkout@v4`. Fix this before the
-next Docker workflow run.
+Since v0.3.0, the Docker runtime stage is `gcr.io/distroless/cc-debian12:nonroot`
+(uid 65532). There is no shell, no curl, no package manager. Consequences:
+
+1. **`RUN` commands in the runtime stage are impossible.** Any directory or file
+   that must exist at runtime (e.g. `/data`) must be created in the builder stage
+   and `COPY`-ed to runtime: `COPY --from=builder /data /data`.
+
+2. **The HEALTHCHECK cannot use curl.** The `--health-check` flag on `logdive-api`
+   opens a `std::net::TcpStream` to its own port and exits 0/1. This is the only
+   health-check mechanism that works without a shell or HTTP client.
+   `HEALTHCHECK CMD ["/usr/local/bin/logdive-api", "--health-check"]`.
+
+3. **Debugging a running distroless container is painful.** There is no shell to
+   exec into. Use `docker cp` to extract files, or add a debug stage in the
+   Dockerfile that uses a full image.
 
 ---
 
-## CLI Cargo.toml has criterion and tempfile in [dependencies] (not dev)
+## ALTER TABLE ADD COLUMN cannot add generated/virtual columns in SQLite
 
-`crates/cli/Cargo.toml` lists `criterion = "0.5.1"` and `tempfile = "3.27.0"`
-under `[dependencies]`, not `[dev-dependencies]`. Both are compiled into the
-release CLI binary unnecessarily, adding dead code and increasing compile time.
-Move them to `[dev-dependencies]` when next touching that file. The concurrent
-test in `crates/cli/tests/concurrent.rs` uses `tempfile`; the CLI itself does
-not use criterion at all.
+When adding a derived field (e.g. `lower(level)`) to an existing schema, you
+cannot use `ALTER TABLE log_entries ADD COLUMN level_norm TEXT GENERATED ALWAYS
+AS (lower(level)) VIRTUAL` — SQLite's `ALTER TABLE ADD COLUMN` does not support
+generated columns. The correct approach (used for `idx_level_norm` in v0.3.0)
+is a functional expression index: `CREATE INDEX IF NOT EXISTS idx_level_norm ON
+log_entries(lower(level))`. The query must then use `lower(level) = ?` with a
+Rust-lowercased bind value to hit the index.
+
+---
+
+## execute() / execute_at() breaking change in v0.3.0
+
+Third parameter changed from `limit: Option<usize>` to `opts: QueryOptions`.
+`QueryOptions { limit: Option<usize>, offset: Option<usize> }`. All call sites
+in the CLI, API, and tests must pass `QueryOptions`. The old signature no longer
+exists — do not add overloads or backwards-compat shims.

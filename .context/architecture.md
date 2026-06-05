@@ -13,6 +13,7 @@ crates/
                                db_path(), BATCH_SIZE=1000
       query.rs                 Tokenizer, AST (QueryNode/AndGroup/Clause), parse()
       executor.rs              build_sql(), translate_clause(), execute(), execute_at()
+                               QueryOptions { limit: Option<usize>, offset: Option<usize> }
       parsers/
         mod.rs                 LogFormat enum, LogFormat::ALL, parse_line() dispatcher
         json.rs                JSON-object-per-line parser
@@ -23,6 +24,7 @@ crates/
       cross_format.rs          5 integration tests: dedup across formats
       proptest_query.rs        4 property-based tests: parser never panics
       security.rs              10 security tests: SQLi, LIKE injection, resource exhaustion
+      functional.rs            28 functional tests: time-range, follow, API, prune boundary
     benches/
       bench_ingest.rs          Criterion: insert throughput
       bench_query.rs           Criterion: query latency at scale
@@ -40,13 +42,14 @@ crates/
     src/
       lib.rs                   Module re-exports for test access
       main.rs                  Clap, ensure_index_exists, parse_cors_origins, axum::serve
+                               --health-check flag: TcpStream::connect to own port, exit 0/1
       router.rs                build_router(), build_cors_layer()
       handlers.rs              query_handler, stats_handler, version_handler
-                               StatsResponse, VersionResponse, QueryParams
+                               StatsResponse, VersionResponse, QueryParams { q, limit, offset }
       error.rs                 AppError (maps LogdiveError → HTTP status codes)
       state.rs                 AppState { db_path }, with_connection()
     tests/
-      integration.rs           18 end-to-end HTTP tests via tower::ServiceExt::oneshot
+      integration.rs           21 end-to-end HTTP tests via tower::ServiceExt::oneshot
 ```
 
 ## Locked decisions
@@ -80,7 +83,7 @@ crates/
   duplicates are counted and silently dropped
 - Why: re-ingesting a file (rotation recovery, repeated --follow startup)
   produces zero duplicates; no separate dedup pass needed
-- What breaks if changed: dedup guarantee; 386 tests assert on InsertStats
+- What breaks if changed: dedup guarantee; 417 tests assert on InsertStats
 
 **1000 rows per insert transaction (BATCH_SIZE)**
 - What: `ingest_reader` batches parsed entries in chunks of 1000 before each
@@ -107,14 +110,23 @@ crates/
 **--follow is Unix-only**
 - What: `crates/core/src/follow.rs` is gated `#[cfg(unix)]`; uses
   `std::os::unix::fs::MetadataExt` for `(dev, ino)` rotation detection
-- Why: Windows rotation detection requires `ReadDirectoryChangesW`, deferred
+- Why: Windows rotation detection requires `ReadDirectoryChangesW`, deferred to v0.4+
 - What breaks if changed: cross-platform compilation
 
-**Query language v0.2 — AND + OR, no parens**
-- What: grammar supports `or_expr := and_expr (OR and_expr)*`; parentheses
-  are rejected by the tokenizer as `unexpected character`
-- Why: simplicity; parens planned for v0.3.0
-- What breaks if changed: all 60+ query tests; public `QueryNode` enum shape
+**Query language v0.3 — AND + OR + parenthesised groups**
+- What: grammar supports `or_expr := and_expr (OR and_expr)*`; clauses can now
+  be `Clause::Group(Box<QueryNode>)` — a parenthesised sub-expression; executor
+  wraps groups in a nested SQL sub-expression
+- Why: shipped in v0.3.0; hand-written recursive descent parser extended with
+  `parse_primary()` that recognises `(` and recurses into `parse_or_expr()`
+- What breaks if changed: all 60+ query tests; public `QueryNode`/`Clause` enum shapes
+
+**QueryOptions replaces bare limit**
+- What: `execute(query, conn, opts: QueryOptions)` and `execute_at(query, conn, opts, now)`
+  take `QueryOptions { limit: Option<usize>, offset: Option<usize> }` since v0.3.0
+- Why: pagination requires both limit and offset; bundling in a struct avoids
+  arity growth as options expand
+- What breaks if changed: every call site in CLI, API, and all tests
 
 ## Schema
 
@@ -132,9 +144,10 @@ CREATE TABLE IF NOT EXISTS log_entries (
     raw_hash    TEXT NOT NULL UNIQUE,
     ingested_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX IF NOT EXISTS idx_level     ON log_entries(level);
-CREATE INDEX IF NOT EXISTS idx_tag       ON log_entries(tag);
-CREATE INDEX IF NOT EXISTS idx_timestamp ON log_entries(timestamp);
+CREATE INDEX IF NOT EXISTS idx_level      ON log_entries(level);
+CREATE INDEX IF NOT EXISTS idx_level_norm ON log_entries(lower(level));
+CREATE INDEX IF NOT EXISTS idx_tag        ON log_entries(tag);
+CREATE INDEX IF NOT EXISTS idx_timestamp  ON log_entries(timestamp);
 ```
 
 Notes:
@@ -145,17 +158,21 @@ Notes:
 - `raw TEXT NOT NULL` — original unparsed line; used as blake3 hash input
 - `raw_hash TEXT NOT NULL UNIQUE` — hex-encoded blake3 of `raw`; the dedup key
 - `ingested_at` — wall-clock UTC at insert time; not exposed in query language
+- `idx_level_norm` — functional expression index on `lower(level)`; added in v0.3.0;
+  idempotent — `CREATE INDEX IF NOT EXISTS` runs on every `Indexer::open()` so
+  existing databases pick it up automatically
 
 ## Query grammar (as-built)
 
-From `crates/core/src/query.rs` comments and implementation:
+From `crates/core/src/query.rs` implementation:
 
 ```
-query     := or_expr
+query     := or_expr [ TIME_RANGE ]
 or_expr   := and_expr (OR and_expr)*
 and_expr  := clause (AND clause)*
 clause    := field OP value
            | field CONTAINS string
+           | "(" or_expr ")"
            | TIME_RANGE
 field     := [a-zA-Z_][a-zA-Z0-9_.]*
 OP        := "=" | "!=" | ">" | "<"
@@ -165,7 +182,8 @@ TIME_RANGE := "last" duration | "since" datetime
 duration  := number ("m" | "h" | "d")
 ```
 
-`AND` binds tighter than `OR`. No parentheses. All keywords case-insensitive.
+`AND` binds tighter than `OR`. Parentheses supported since v0.3.0. All keywords
+case-insensitive.
 
 Tokenizer is more permissive than the grammar: allows `-` and `:` inside idents
 so bare-word datetime literals (`2024-01-01T10:00:00Z`) and hyphenated values
@@ -175,6 +193,10 @@ colons are allowed in *values* but not in *field names*.
 
 The executor re-validates field names at `column_for_field()` (defense-in-depth)
 before embedding them in `json_extract(fields, '$.fieldname')`.
+
+Level field queries are routed through `lower(level) = ?` with Rust-lowercased
+bind values, hitting the `idx_level_norm` functional index. This makes
+`level=ERROR`, `level=Error`, and `level=error` all match the same rows.
 
 ## Dependency inventory
 
@@ -201,7 +223,3 @@ before embedding them in `json_extract(fields, '$.fieldname')`.
 | criterion | 0.5 | dev | Benchmarks | Nothing |
 | proptest | 1 | dev | Property-based tests for query parser | Nothing |
 | http-body-util | 0.1 | api dev | Body collection in integration tests | Nothing |
-
-**Known issue**: `criterion` and `tempfile` are declared in `[dependencies]`
-(not `[dev-dependencies]`) in `crates/cli/Cargo.toml`. They get compiled into
-the release CLI binary unnecessarily. Should be moved to `[dev-dependencies]`.

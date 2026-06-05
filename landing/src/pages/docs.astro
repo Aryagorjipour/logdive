@@ -77,7 +77,7 @@ import { CURRENT_VERSION } from '@data/roadmap';
 <span class="prompt">$</span> cd logdive
 <span class="prompt">$</span> cargo build --release
       </CodeBlock>
-      <p class="lede">Resulting binaries: <code class="code-inline">logdive</code> at 3.7&thinsp;MB stripped, <code class="code-inline">logdive-api</code> at 4.1&thinsp;MB stripped. MSRV: Rust 1.85.</p>
+      <p class="lede">Resulting binaries: <code class="code-inline">logdive</code> at 3.8&thinsp;MB stripped, <code class="code-inline">logdive-api</code> at 4.1&thinsp;MB stripped. MSRV: Rust 1.85.</p>
     </section>
 
     <!-- CLI -->
@@ -103,7 +103,7 @@ import { CURRENT_VERSION } from '@data/roadmap';
         <dt>--timestamp-now</dt>
         <dd>Assign current UTC time to entries lacking a <code class="code-inline">timestamp</code> field instead of skipping them.</dd>
         <dt>--follow</dt>
-        <dd>Tail the file for new lines, similar to <code class="code-inline">tail -f</code>. Detects log rotation and truncation. Requires <code class="code-inline">--file</code>. Unix only (Windows support is v0.3+).</dd>
+        <dd>Tail the file for new lines, similar to <code class="code-inline">tail -f</code>. Detects log rotation and truncation. Requires <code class="code-inline">--file</code>. Unix only (Windows support is v0.4+).</dd>
         <dt>--db &lt;PATH&gt;</dt>
         <dd>Database path override. Default <code class="code-inline">~/.logdive/index.db</code>. Also settable via <code class="code-inline">LOGDIVE_DB</code>.</dd>
       </dl>
@@ -112,15 +112,18 @@ import { CURRENT_VERSION } from '@data/roadmap';
       <p>Evaluates a query expression and prints matching rows.</p>
       <CodeBlock id="c-query">
 <span class="prompt">$</span> logdive query <span class="str">'level=error AND service=payments last 2h'</span>
-<span class="prompt">$</span> logdive query <span class="str">'level=error OR level=warn'</span> --format json
+<span class="prompt">$</span> logdive query <span class="str">'(level=error OR level=warn) AND service=payments'</span>
+<span class="prompt">$</span> logdive query <span class="str">'level=error OR level=warn'</span> --output json
 <span class="prompt">$</span> logdive query <span class="str">'message contains "timeout" last 24h'</span>
-<span class="prompt">$</span> logdive query <span class="str">'since 2026-01-01'</span> --limit 0
+<span class="prompt">$</span> logdive query <span class="str">'since 2026-01-01'</span> --limit 0 --offset 200
       </CodeBlock>
       <dl class="kv-list">
-        <dt>--format pretty|json</dt>
+        <dt>--output pretty|json</dt>
         <dd>Output format. Default <code class="code-inline">pretty</code> (colored). <code class="code-inline">json</code> is newline-delimited, pipe-friendly.</dd>
         <dt>--limit &lt;N&gt;</dt>
         <dd>Maximum results. Default 1000. Use <code class="code-inline">0</code> for unlimited.</dd>
+        <dt>--offset &lt;N&gt;</dt>
+        <dd>Skip the first N results. Use with <code class="code-inline">--limit</code> for page navigation. Default 0.</dd>
         <dt>--db &lt;PATH&gt;</dt>
         <dd>Database path override.</dd>
       </dl>
@@ -170,6 +173,8 @@ import { CURRENT_VERSION } from '@data/roadmap';
         <dd>Query expression. URL-encoded. Same syntax as CLI.</dd>
         <dt>limit (optional)</dt>
         <dd>Maximum results. Default 1000. <code class="code-inline">0</code> for unlimited.</dd>
+        <dt>offset (optional)</dt>
+        <dd>Skip the first N results. Default 0. Use with <code class="code-inline">limit</code> for pagination.</dd>
       </dl>
       <CodeBlock id="api-q">
 <span class="prompt">$</span> curl <span class="str">'http://127.0.0.1:4000/query?q=level%3Derror&amp;limit=50'</span>
@@ -210,13 +215,13 @@ import { CURRENT_VERSION } from '@data/roadmap';
       <div class="grammar"><span class="nt">query</span>      <span class="tok">::=</span> <span class="nt">or_expr</span> [ <span class="nt">time_range</span> ]
 <span class="nt">or_expr</span>    <span class="tok">::=</span> <span class="nt">and_expr</span> ( <span class="tok">"OR"</span> <span class="nt">and_expr</span> )*
 <span class="nt">and_expr</span>   <span class="tok">::=</span> <span class="nt">clause</span> ( <span class="tok">"AND"</span> <span class="nt">clause</span> )*
-<span class="nt">clause</span>     <span class="tok">::=</span> <span class="nt">field</span> <span class="nt">op</span> <span class="nt">value</span> | <span class="nt">field</span> <span class="tok">"CONTAINS"</span> <span class="nt">string</span>
+<span class="nt">clause</span>     <span class="tok">::=</span> <span class="nt">field</span> <span class="nt">op</span> <span class="nt">value</span> | <span class="nt">field</span> <span class="tok">"CONTAINS"</span> <span class="nt">string</span> | <span class="tok">"("</span> <span class="nt">or_expr</span> <span class="tok">")"</span>
 <span class="nt">op</span>         <span class="tok">::=</span> <span class="tok">"="</span> | <span class="tok">"!="</span> | <span class="tok">">"</span> | <span class="tok">"&lt;"</span>
 <span class="nt">field</span>      <span class="tok">::=</span> <span class="nt">ident</span> ( <span class="tok">"."</span> <span class="nt">ident</span> )*
 <span class="nt">value</span>      <span class="tok">::=</span> <span class="nt">ident</span> | <span class="nt">number</span> | <span class="nt">quoted_string</span>
 <span class="nt">time_range</span> <span class="tok">::=</span> <span class="tok">"last"</span> <span class="nt">duration</span> | <span class="tok">"since"</span> <span class="nt">datetime</span>
 <span class="nt">duration</span>   <span class="tok">::=</span> <span class="nt">number</span> ( <span class="tok">"m"</span> | <span class="tok">"h"</span> | <span class="tok">"d"</span> )</div>
-      <p>Keywords are case-insensitive. Parenthesised expressions are not yet supported (planned for v0.3).</p>
+      <p>Keywords are case-insensitive. <code class="code-inline">AND</code> binds tighter than <code class="code-inline">OR</code>; use parentheses to override precedence.</p>
 
       <h3>Operators</h3>
       <dl class="kv-list">
@@ -238,8 +243,14 @@ level=error AND service=payments last 2h
 <span class="cm"># Errors OR warnings</span>
 level=error OR level=warn
 
-<span class="cm"># AND within each OR branch</span>
+<span class="cm"># Parentheses for explicit precedence</span>
+(level=error OR level=warn) AND service=payments
+
+<span class="cm"># AND within each OR branch (no parens needed — AND binds tighter)</span>
 level=error AND service=payments OR level=warn AND tag=worker
+
+<span class="cm"># Case-insensitive level match (ERROR, error, Error all hit the same rows)</span>
+level=ERROR AND service=payments
 
 <span class="cm"># Substring search on the message body</span>
 message contains <span class="str">"timeout"</span> last 24h
@@ -294,7 +305,7 @@ since 2026-04-15T09:00:00Z
     ghcr.io/aryagorjipour/logdive:{CURRENT_VERSION} \
     ingest --file /logs/app.log --tag production
       </CodeBlock>
-      <p>Default entrypoint is <code class="code-inline">logdive-api</code>. The image pre-sets <code class="code-inline">LOGDIVE_DB=/data/index.db</code> and <code class="code-inline">LOGDIVE_API_HOST=0.0.0.0</code>. HEALTHCHECK on <code class="code-inline">GET /version</code>.</p>
+      <p>Default entrypoint is <code class="code-inline">logdive-api</code>. The image pre-sets <code class="code-inline">LOGDIVE_DB=/data/index.db</code> and <code class="code-inline">LOGDIVE_API_HOST=0.0.0.0</code>. Runtime is <code class="code-inline">gcr.io/distroless/cc-debian12:nonroot</code> — no shell, no curl, no root. HEALTHCHECK uses <code class="code-inline">logdive-api --health-check</code>, which opens a TCP connection to the server's own port via stdlib — no HTTP client required.</p>
     </section>
 
     <!-- ARCHITECTURE -->

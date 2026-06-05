@@ -12,6 +12,13 @@
 //! - `--follow` on `ingest` with `--file` (M3: file tailing, Unix only).
 //! - `prune` subcommand (M4: time-based retention).
 //! - `LOGDIVE_DB` environment-variable fallback for `--db` (M4).
+//!
+//! # Changes in v0.3.0
+//!
+//! - `--output pretty|json` on `query` replaces `--format` (B3: unambiguous
+//!   flag name — `--format` on `ingest` is the input format, so reusing it
+//!   on `query` for the output format was confusing).
+//! - `--limit` and `--offset` on `query` for result-set pagination (B2).
 
 mod prune_cmd;
 mod render;
@@ -25,8 +32,8 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use logdive_core::{
-    Indexer, InsertStats, LogEntry, LogFormat, LogdiveError, Result, db_path, execute, parse_line,
-    parse_query,
+    Indexer, InsertStats, LogEntry, LogFormat, LogdiveError, QueryOptions, Result, db_path,
+    execute, parse_line, parse_query,
 };
 use prune_cmd::{PruneArgs, run_prune};
 use render::{OutputFormat, render};
@@ -118,13 +125,21 @@ struct QueryArgs {
     /// Query expression (e.g. `level=error AND service=payments last 2h`).
     query: String,
 
-    /// Output format.
+    /// Output format. `pretty` (default) is human-readable and optionally
+    /// colored; `json` emits newline-delimited JSON suitable for piping
+    /// into `jq` or other tools.
     #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
-    format: OutputFormat,
+    output: OutputFormat,
 
     /// Maximum number of results to return. 0 means unlimited.
     #[arg(long, default_value_t = 1000)]
     limit: usize,
+
+    /// Number of results to skip from the front of the ordered result set.
+    /// Use with `--limit` to page through large result sets.
+    /// 0 (default) starts from the first result.
+    #[arg(long, default_value_t = 0)]
+    offset: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -397,14 +412,20 @@ fn ingest_lines(
 
 fn handle_query(db: &Path, args: QueryArgs) -> Result<()> {
     let ast = parse_query(&args.query)?;
-    let limit = match args.limit {
-        0 => None,
-        n => Some(n),
+    let opts = QueryOptions {
+        limit: match args.limit {
+            0 => None,
+            n => Some(n),
+        },
+        offset: match args.offset {
+            0 => None,
+            n => Some(n),
+        },
     };
 
     let indexer = Indexer::open(db)?;
-    let entries = execute(&ast, indexer.connection(), limit)?;
-    render(&entries, args.format)
+    let entries = execute(&ast, indexer.connection(), opts)?;
+    render(&entries, args.output)
 }
 
 // ---------------------------------------------------------------------------
