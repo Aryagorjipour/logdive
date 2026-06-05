@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Arya (ArySmart) Gorjipour"]
@@ -17,7 +17,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 # Internal
-logdive-core = { path = "crates/core", version = "0.2.1" }
+logdive-core = { path = "crates/core", version = "0.3.0" }
 
 # Core: storage, hashing, serialization, time
 rusqlite = { version = "0.32", features = ["bundled"] }
