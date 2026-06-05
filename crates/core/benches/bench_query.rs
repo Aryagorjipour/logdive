@@ -249,7 +249,10 @@ fn bench_or_queries(c: &mut Criterion) {
     let scenarios = [
         ("two_branch_50pct", "level=error OR level=warn"),
         // Four-branch OR — nearly 100% of rows (all four level values).
-        ("four_branch_100pct", "level=error OR level=warn OR level=info OR level=debug"),
+        (
+            "four_branch_100pct",
+            "level=error OR level=warn OR level=info OR level=debug",
+        ),
         // OR across JSON fields — each branch hits json_extract.
         ("json_two_branch", "service=payments OR service=auth"),
     ];
@@ -261,7 +264,10 @@ fn bench_or_queries(c: &mut Criterion) {
                 let rows = execute(
                     &ast,
                     indexer.connection(),
-                    QueryOptions { limit: Some(1_000), offset: None },
+                    QueryOptions {
+                        limit: Some(1_000),
+                        offset: None,
+                    },
                 )
                 .expect("execute");
                 assert!(rows.len() <= 1_000);
@@ -282,9 +288,15 @@ fn bench_paren_group(c: &mut Criterion) {
     // Parenthesised OR inside an AND — exercises the Clause::Group path.
     let scenarios = [
         // ~12.5% selectivity: (error ∪ warn) ∩ payments.
-        ("or_inside_and_12pct", "(level=error OR level=warn) AND service=payments"),
+        (
+            "or_inside_and_12pct",
+            "(level=error OR level=warn) AND service=payments",
+        ),
         // Mixed JSON fields inside parens.
-        ("json_or_inside_and", "(service=payments OR service=auth) AND level=error"),
+        (
+            "json_or_inside_and",
+            "(service=payments OR service=auth) AND level=error",
+        ),
         // Nested: paren group ANDed with a CONTAINS — hits the LIKE scan.
         (
             "or_and_contains",
@@ -299,7 +311,10 @@ fn bench_paren_group(c: &mut Criterion) {
                 let rows = execute(
                     &ast,
                     indexer.connection(),
-                    QueryOptions { limit: Some(1_000), offset: None },
+                    QueryOptions {
+                        limit: Some(1_000),
+                        offset: None,
+                    },
                 )
                 .expect("execute");
                 assert!(rows.len() <= 1_000);
@@ -332,7 +347,10 @@ fn bench_case_insensitive_level(c: &mut Criterion) {
                 let rows = execute(
                     &ast,
                     indexer.connection(),
-                    QueryOptions { limit: Some(1_000), offset: None },
+                    QueryOptions {
+                        limit: Some(1_000),
+                        offset: None,
+                    },
                 )
                 .expect("execute");
                 assert_eq!(rows.len(), 1_000);
@@ -353,16 +371,34 @@ fn bench_pagination(c: &mut Criterion) {
     // Compare first page vs deep page on a high-selectivity query.
     let ast = parse("level=error");
     let scenarios: &[(&str, QueryOptions)] = &[
-        ("page_1_limit_50", QueryOptions { limit: Some(50), offset: None }),
-        ("page_2_limit_50_offset_50", QueryOptions { limit: Some(50), offset: Some(50) }),
-        ("page_50_limit_50_offset_2450", QueryOptions { limit: Some(50), offset: Some(2_450) }),
+        (
+            "page_1_limit_50",
+            QueryOptions {
+                limit: Some(50),
+                offset: None,
+            },
+        ),
+        (
+            "page_2_limit_50_offset_50",
+            QueryOptions {
+                limit: Some(50),
+                offset: Some(50),
+            },
+        ),
+        (
+            "page_50_limit_50_offset_2450",
+            QueryOptions {
+                limit: Some(50),
+                offset: Some(2_450),
+            },
+        ),
     ];
 
     for (label, opts) in scenarios {
-        let opts = opts.clone();
+        let opts = *opts;
         group.bench_function(BenchmarkId::from_parameter(*label), |b| {
             b.iter(|| {
-                let rows = execute(&ast, indexer.connection(), opts.clone()).expect("execute");
+                let rows = execute(&ast, indexer.connection(), opts).expect("execute");
                 assert!(rows.len() <= 50);
             });
         });

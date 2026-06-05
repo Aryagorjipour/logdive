@@ -51,7 +51,19 @@ allow = []
 deny = []
 # Skip version checks for crates that intentionally ship two versions
 # (common for proc-macro / runtime version splits).
-skip = []
+#
+# The entries below are transitive from `notify 6.1 → inotify 0.9`. notify 6
+# is the current stable release; the 9.0 series (which updates these deps) is
+# still pre-release. These duplicates are harmless — they appear only on the
+# CLI side and are never exposed in the public API.
+skip = [
+    # inotify 0.9 (via notify 6.1) still uses bitflags 1.x
+    { name = "bitflags", version = "1" },
+    # notify 6.1 uses mio 0.8; tokio uses mio 1.x
+    { name = "mio", version = "0.8" },
+    # mio 0.8 uses windows-sys 0.48; everything else has moved to 0.61+
+    { name = "windows-sys", version = "0.48" },
+]
 skip-tree = []
 
 # ---------------------------------------------------------------------------
