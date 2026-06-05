@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="banner.png" alt="logdive — query your logs. no daemon. no yaml." width="700" />
+  <img src="assets/banner.png" alt="logdive — query your logs. no daemon. no yaml." width="700" />
 </p>
 
 <p align="center">
