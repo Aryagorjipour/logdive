@@ -1,0 +1,41 @@
+timestamp=2026-04-15T09:00:05Z level=info message="worker process started" service=worker pid=12481 workers=4 tag=worker
+timestamp=2026-04-15T09:00:06Z level=info message="queue connected" service=worker queue=email host=redis-01:6379 tag=worker
+timestamp=2026-04-15T09:00:06Z level=info message="queue connected" service=worker queue=notifications host=redis-01:6379 tag=worker
+timestamp=2026-04-15T09:02:44Z level=info message="job started" service=worker job_id=job_8801 queue=email job_type=send_confirmation user_id=4812 tag=worker
+timestamp=2026-04-15T09:02:45Z level=info message="job completed" service=worker job_id=job_8801 queue=email duration_ms=312 tag=worker
+timestamp=2026-04-15T09:04:24Z level=info message="job started" service=worker job_id=job_8802 queue=notifications job_type=order_confirmed user_id=4812 order_id=ord_28471 tag=worker
+timestamp=2026-04-15T09:04:25Z level=info message="job completed" service=worker job_id=job_8802 queue=notifications duration_ms=88 tag=worker
+timestamp=2026-04-15T09:15:00Z level=info message="queue stats" service=worker queue=email pending=0 processed=1 failed=0 tag=worker
+timestamp=2026-04-15T09:15:00Z level=info message="queue stats" service=worker queue=notifications pending=0 processed=1 failed=0 tag=worker
+timestamp=2026-04-15T09:22:49Z level=info message="job started" service=worker job_id=job_8803 queue=email job_type=send_confirmation user_id=9231 tag=worker
+timestamp=2026-04-15T09:22:50Z level=info message="job completed" service=worker job_id=job_8803 queue=email duration_ms=287 tag=worker
+timestamp=2026-04-15T09:22:50Z level=info message="job started" service=worker job_id=job_8804 queue=notifications job_type=order_confirmed user_id=9231 order_id=ord_28472 tag=worker
+timestamp=2026-04-15T09:22:51Z level=info message="job completed" service=worker job_id=job_8804 queue=notifications duration_ms=91 tag=worker
+timestamp=2026-04-15T09:42:16Z level=warn message="job failed" service=worker job_id=job_8805 queue=notifications job_type=rate_limit_alert user_id=1147 error="smtp: connection refused" attempts=1 tag=worker
+timestamp=2026-04-15T09:42:46Z level=warn message="job retrying" service=worker job_id=job_8805 queue=notifications attempt=2 backoff_ms=30000 tag=worker
+timestamp=2026-04-15T09:43:16Z level=error message="job failed permanently" service=worker job_id=job_8805 queue=notifications attempts=3 error="smtp: connection refused" tag=worker
+timestamp=2026-04-15T09:51:09Z level=info message="job started" service=worker job_id=job_8806 queue=email job_type=payment_failed_notice user_id=3388 tag=worker
+timestamp=2026-04-15T09:51:10Z level=info message="job completed" service=worker job_id=job_8806 queue=email duration_ms=301 tag=worker
+timestamp=2026-04-15T10:00:00Z level=info message="queue stats" service=worker queue=email pending=0 processed=3 failed=0 tag=worker
+timestamp=2026-04-15T10:00:00Z level=info message="queue stats" service=worker queue=notifications pending=0 processed=2 failed=1 tag=worker
+timestamp=2026-04-15T10:04:10Z level=info message="job started" service=worker job_id=job_8807 queue=email job_type=send_confirmation user_id=7722 tag=worker
+timestamp=2026-04-15T10:04:11Z level=info message="job completed" service=worker job_id=job_8807 queue=email duration_ms=295 tag=worker
+timestamp=2026-04-15T10:04:11Z level=info message="job started" service=worker job_id=job_8808 queue=notifications job_type=order_confirmed user_id=7722 order_id=ord_28474 tag=worker
+timestamp=2026-04-15T10:04:12Z level=info message="job completed" service=worker job_id=job_8808 queue=notifications duration_ms=84 tag=worker
+timestamp=2026-04-15T10:23:23Z level=info message="job started" service=worker job_id=job_8809 queue=notifications job_type=session_cleanup_report tag=worker
+timestamp=2026-04-15T10:23:24Z level=info message="job completed" service=worker job_id=job_8809 queue=notifications duration_ms=142 tag=worker
+timestamp=2026-04-15T10:55:21Z level=info message="job started" service=worker job_id=job_8810 queue=email job_type=send_confirmation user_id=5091 tag=worker
+timestamp=2026-04-15T10:55:22Z level=info message="job completed" service=worker job_id=job_8810 queue=email duration_ms=318 tag=worker
+timestamp=2026-04-15T11:00:00Z level=info message="queue stats" service=worker queue=email pending=0 processed=5 failed=0 tag=worker
+timestamp=2026-04-15T11:00:00Z level=info message="queue stats" service=worker queue=notifications pending=0 processed=4 failed=1 tag=worker
+timestamp=2026-04-15T11:02:48Z level=warn message="redis memory high" service=worker used_mb=412 max_mb=512 percent=80 tag=worker
+timestamp=2026-04-15T11:18:59Z level=info message="job started" service=worker job_id=job_8811 queue=email job_type=send_confirmation user_id=2458 tag=worker
+timestamp=2026-04-15T11:19:00Z level=info message="job completed" service=worker job_id=job_8811 queue=email duration_ms=307 tag=worker
+timestamp=2026-04-15T11:19:00Z level=info message="job started" service=worker job_id=job_8812 queue=notifications job_type=order_confirmed user_id=2458 order_id=ord_28476 tag=worker
+timestamp=2026-04-15T11:19:01Z level=info message="job completed" service=worker job_id=job_8812 queue=notifications duration_ms=79 tag=worker
+timestamp=2026-04-15T11:27:16Z level=error message="job queue error" service=worker queue=email error="connection reset by peer" tag=worker
+timestamp=2026-04-15T11:27:17Z level=info message="queue reconnected" service=worker queue=email tag=worker
+timestamp=2026-04-15T11:27:17Z level=warn message="job requeued after disconnect" service=worker queue=email requeued=2 tag=worker
+timestamp=2026-04-15T12:00:00Z level=info message="queue stats" service=worker queue=email pending=0 processed=6 failed=0 tag=worker
+timestamp=2026-04-15T12:00:00Z level=info message="queue stats" service=worker queue=notifications pending=0 processed=5 failed=1 tag=worker
+timestamp=2026-04-15T12:51:19Z level=info message="worker process shutdown" service=worker jobs_processed=11 jobs_failed=1 uptime_seconds=14474 tag=worker
