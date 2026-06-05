@@ -6,7 +6,7 @@
 #   chef     – current stable Rust toolchain with cargo-chef installed (shared base)
 #   planner  – computes the dependency recipe from manifests + lockfile
 #   builder  – cooks dependencies (cacheable layer), then builds binaries
-#   runtime  – minimal debian:bookworm-slim image; no toolchain, no sources
+#   runtime  – distroless/cc-debian12:nonroot — no shell, no tools, no root
 #
 # Both binaries are shipped in one image:
 #   - logdive-api  (default ENTRYPOINT — HTTP server)
@@ -44,6 +44,10 @@ RUN cargo chef prepare --recipe-path recipe.json
 #   On a cache hit, step A is skipped entirely — deps are restored in < 1 s.
 # Step B (build): compile the two release binaries against the cached deps.
 #   Only this step re-runs on pure source changes.
+#
+# The /data directory is created here — distroless has no shell or mkdir,
+# so directory scaffolding must happen in a shell-capable stage. uid/gid
+# 65532 is the nonroot user pre-provisioned in the distroless:nonroot image.
 # ─────────────────────────────────────────────────────────────────────────────
 FROM chef AS builder
 COPY --from=planner /build/recipe.json recipe.json
@@ -53,37 +57,26 @@ RUN cargo chef cook --release --recipe-path recipe.json
 # source-only changes don't bust the dependency cache above.
 COPY . .
 RUN cargo build --release --bin logdive --bin logdive-api
+# Pre-create /data owned by the distroless nonroot uid so the index is
+# writable when a Docker named volume is mounted at /data on first run.
+RUN mkdir -p /data && chown 65532:65532 /data
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 4 — runtime
-# Minimal debian:bookworm-slim. Contains only:
-#   - the two logdive binaries
-#   - curl  (HEALTHCHECK)
-#   - ca-certificates (TLS verification for any future HTTPS use)
-# No Rust toolchain, no build artefacts, no source code.
-# rusqlite is compiled with the "bundled" feature — SQLite is statically
-# linked into the binary, so no libsqlite3 runtime dep is needed.
+# gcr.io/distroless/cc-debian12:nonroot — minimal image containing only the
+# C runtime library (glibc + libgcc). Contains:
+#   - the two logdive binaries (SQLite statically linked via rusqlite bundled)
+#   - the /data directory scaffold (from builder)
+#
+# No shell, no curl, no package manager, no toolchain, no source code.
+# The nonroot tag runs the process as uid 65532 without any root interaction.
+# HEALTHCHECK uses --health-check (TCP connect), not curl.
 # ─────────────────────────────────────────────────────────────────────────────
-FROM debian:bookworm-slim AS runtime
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Non-root system user for container security.
-RUN groupadd --system --gid 1000 logdive \
-    && useradd --system --uid 1000 --gid logdive \
-               --no-create-home --shell /usr/sbin/nologin \
-               logdive
-
-# Data directory owned by the runtime user so it's writable when a host
-# volume is freshly mounted (before chown runs on the host side).
-RUN mkdir -p /data && chown logdive:logdive /data
+FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 
 COPY --from=builder /build/target/release/logdive     /usr/local/bin/logdive
 COPY --from=builder /build/target/release/logdive-api /usr/local/bin/logdive-api
+COPY --from=builder /data /data
 
 # ── Environment defaults ──────────────────────────────────────────────────────
 
@@ -100,12 +93,14 @@ EXPOSE 4000
 # ── Persistent volume ─────────────────────────────────────────────────────────
 VOLUME ["/data"]
 
-USER logdive
 WORKDIR /data
 
 # ── Health check ──────────────────────────────────────────────────────────────
+# Exec form (JSON array) — no shell needed, works in distroless.
+# --health-check does a TCP connect to the server's own port and exits 0/1.
+# LOGDIVE_API_PORT env var is forwarded automatically by Docker.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -sf "http://127.0.0.1:${LOGDIVE_API_PORT:-4000}/version" || exit 1
+    CMD ["/usr/local/bin/logdive-api", "--health-check"]
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 # Default: HTTP API server.
