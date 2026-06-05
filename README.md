@@ -1,12 +1,18 @@
+<p align="center">
+  <img src="banner.png" alt="logdive — query your logs. no daemon. no yaml." width="700" />
+</p>
+
+<p align="center">
+  <a href="https://github.com/Aryagorjipour/logdive/actions/workflows/ci.yml"><img src="https://github.com/Aryagorjipour/logdive/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/Aryagorjipour/logdive/actions/workflows/docker.yml"><img src="https://github.com/Aryagorjipour/logdive/actions/workflows/docker.yml/badge.svg" alt="Docker" /></a>
+  <a href="https://crates.io/crates/logdive"><img src="https://img.shields.io/crates/v/logdive.svg" alt="Crates.io" /></a>
+  <a href="https://docs.rs/logdive-core"><img src="https://img.shields.io/docsrs/logdive-core" alt="Docs.rs" /></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0" /></a>
+</p>
+
 # logdive
 
 **Fast, self-hosted query engine for structured JSON logs.**
-
-[![CI](https://github.com/Aryagorjipour/logdive/actions/workflows/ci.yml/badge.svg)](https://github.com/Aryagorjipour/logdive/actions/workflows/ci.yml)
-[![Docker](https://github.com/Aryagorjipour/logdive/actions/workflows/docker.yml/badge.svg)](https://github.com/Aryagorjipour/logdive/actions/workflows/docker.yml)
-[![Crates.io](https://img.shields.io/crates/v/logdive.svg)](https://crates.io/crates/logdive)
-[![Docs.rs](https://img.shields.io/docsrs/logdive-core)](https://docs.rs/logdive-core)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 A single Rust binary that ingests structured logs, indexes them locally in SQLite, and lets you query them instantly from the CLI or an HTTP API. No infrastructure, no daemons, no cloud.
 
