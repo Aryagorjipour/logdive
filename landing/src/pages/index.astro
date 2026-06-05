@@ -59,24 +59,24 @@ const base = import.meta.env.BASE_URL;
       </div>
       <div class="stat-grid">
         <div class="stat-card">
-          <div class="stat-num">210<span class="unit">k lines/s</span></div>
+          <div class="stat-num">189<span class="unit">k lines/s</span></div>
           <div class="stat-desc">Batched ingest throughput. Sustained, not peak.</div>
         </div>
         <div class="stat-card">
-          <div class="stat-num">166<span class="unit">k lines/s</span></div>
+          <div class="stat-num">150<span class="unit">k lines/s</span></div>
           <div class="stat-desc">End-to-end parse + ingest, JSON in, indexed out.</div>
         </div>
         <div class="stat-card">
-          <div class="stat-num">17<span class="unit">µs</span></div>
+          <div class="stat-num">23<span class="unit">µs</span></div>
           <div class="stat-desc">Indexed-field query against 100k rows.</div>
         </div>
         <div class="stat-card">
-          <div class="stat-num">3.6<span class="unit">ms</span></div>
+          <div class="stat-num">4.1<span class="unit">ms</span></div>
           <div class="stat-desc">json_extract field query against 100k rows.</div>
         </div>
       </div>
       <p class="muted" style="margin-top: var(--space-6); font-size: 14px;">
-        Full-table <code class="code-inline">CONTAINS</code> scans land at 36–40&thinsp;ms over 100k rows. Run <code class="code-inline">cargo bench</code> for your own baseline.
+        Full-table <code class="code-inline">CONTAINS</code> scans land at 35–38&thinsp;ms over 100k rows. Run <code class="code-inline">cargo bench</code> for your own baseline.
       </p>
     </div>
   </section>
@@ -131,8 +131,8 @@ const base = import.meta.env.BASE_URL;
 <span class="cm">// Cargo workspace</span>
 logdive/
 ├── <span class="kw">logdive-core</span>     <span class="cm">// ingestion, query parser, SQLite layer</span>
-├── <span class="kw">logdive</span>          <span class="cm">// CLI binary — 3.8 MB stripped</span>
-└── <span class="kw">logdive-api</span>      <span class="cm">// read-only HTTP server — 4.1 MB stripped</span>
+├── <span class="kw">logdive</span>          <span class="cm">// CLI binary — 3.9 MB stripped</span>
+└── <span class="kw">logdive-api</span>      <span class="cm">// read-only HTTP server — 4.2 MB stripped</span>
       </CodeBlock>
     </div>
   </section>

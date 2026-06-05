@@ -609,21 +609,25 @@ Representative numbers on a modern laptop (Acer Nitro 5, Linux):
 
 | Operation | Throughput / Latency |
 |---|---|
-| Ingestion, batched insert (10k rows) | ~210k lines/sec |
-| Ingestion, parse + insert end-to-end (10k rows) | ~166k lines/sec |
-| Query on known field, empty result (100k rows) | ~17 μs |
-| Query on known field, 25% match (100k rows, LIMIT 1000) | ~39 ms |
-| Query on JSON field, 25% match (100k rows, LIMIT 1000) | ~3.6 ms |
-| Query on JSON field, 0% match — full scan (100k rows) | ~68 ms |
-| `CONTAINS` full-table scan (100k rows) | ~36–40 ms |
+| Ingestion, batched insert (10k rows) | ~189k lines/sec |
+| Ingestion, parse + insert end-to-end (10k rows) | ~150k lines/sec |
+| Query on known field, empty result (100k rows) | ~23 μs |
+| Query on known field, 25% match (100k rows, LIMIT 1000) | ~49 ms |
+| Query on JSON field, 25% match (100k rows, LIMIT 1000) | ~4.1 ms |
+| Query on JSON field, 0% match — full scan (100k rows) | ~69 ms |
+| `CONTAINS` full-table scan (100k rows) | ~35–38 ms |
 | 3-clause `AND` chain (100k rows) | ~22 ms |
+| `OR` query, 2-branch 50% match (100k rows, LIMIT 1000) | ~68 ms |
+| Parenthesised group `(A OR B) AND C`, 12.5% match (100k rows) | ~45 ms |
+| Case-insensitive level query — uppercase, lowercase, mixed | ~51 ms (identical) |
+| Pagination deep page overhead (offset 2450 vs offset 0) | +8 ms |
 
 Numbers from criterion benchmarks — run `cargo bench` for your own baseline.
 
 Release-profile binary sizes:
 
-- `logdive`: 3.8 MB
-- `logdive-api`: 4.1 MB
+- `logdive`: 3.9 MB
+- `logdive-api`: 4.2 MB
 
 Targets: both binaries under 10 MB. Run `scripts/check-binary-size.sh` to verify.
 
