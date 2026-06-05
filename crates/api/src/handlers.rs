@@ -30,20 +30,25 @@ use crate::state::AppState;
 /// `q` is modeled as `Option<String>` rather than a required field so the
 /// "missing `q`" error message comes from our own `AppError::bad_request`
 /// path rather than from Axum's generic extractor rejection.
+///
+/// `offset` is optional; absent or `0` both mean "start from the first result".
+/// Mirrors the CLI's `--offset` behaviour so both surfaces page identically.
 #[derive(Debug, Deserialize)]
 pub struct QueryParams {
     pub q: Option<String>,
     pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 /// Default cap on result set size when `limit` is not supplied. Mirrors
 /// the CLI's `--limit` default so the two surfaces behave identically.
 const DEFAULT_LIMIT: usize = 1000;
 
-/// `GET /query?q=<expr>&limit=<n>`
+/// `GET /query?q=<expr>&limit=<n>&offset=<m>`
 ///
 /// Returns matching log entries as newline-delimited JSON, one entry per
 /// line. A missing `limit` defaults to 1000; `limit=0` means unlimited.
+/// A missing or zero `offset` starts from the first result.
 pub async fn query_handler(
     State(state): State<AppState>,
     Query(params): Query<QueryParams>,
@@ -55,8 +60,12 @@ pub async fn query_handler(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::bad_request("missing or empty `q` parameter"))?;
 
-    // Apply the same "0 = unlimited" rule as the CLI.
+    // Apply the same "0 = unlimited" and "0 = absent" rules as the CLI.
     let limit = match params.limit.unwrap_or(DEFAULT_LIMIT) {
+        0 => None,
+        n => Some(n),
+    };
+    let offset = match params.offset.unwrap_or(0) {
         0 => None,
         n => Some(n),
     };
@@ -65,18 +74,11 @@ pub async fn query_handler(
     // `From<LogdiveError>` impl before we touch the DB.
     let ast = parse_query(&query_str)?;
 
-    tracing::debug!(query = %query_str, ?limit, "executing query over HTTP");
+    tracing::debug!(query = %query_str, ?limit, ?offset, "executing query over HTTP");
 
     let rows: Vec<LogEntry> = state
         .with_connection(move |indexer| {
-            execute(
-                &ast,
-                indexer.connection(),
-                QueryOptions {
-                    limit,
-                    offset: None,
-                },
-            )
+            execute(&ast, indexer.connection(), QueryOptions { limit, offset })
         })
         .await?;
 
