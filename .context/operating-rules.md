@@ -1,7 +1,7 @@
 # operating-rules.md
 
 Complete rules for working on this project. Rules 1–12 are from CLAUDE.md;
-rules 13+ are implied by what was found during the v0.2.1 exploration.
+rules 13+ are derived from discovered constraints and past incidents.
 
 ## Rules
 
@@ -11,7 +11,7 @@ rules 13+ are implied by what was found during the v0.2.1 exploration.
 
 2. **Full files only.** Never deliver diffs or partial snippets with
    "...rest unchanged...". Every changed file ships as its complete new content.
-   Use the Write tool, not Edit for file-level rewrites.
+   Use the Write tool for full rewrites; Edit tool for targeted, bounded changes.
 
 3. **Zero placeholders, zero TODOs, zero "// for now" stubs.** If you cannot
    finish something, surface the blocker. Do not paper over it.
@@ -54,21 +54,20 @@ rules 13+ are implied by what was found during the v0.2.1 exploration.
 12. **Use the right binary name.** The CLI binary and crate name are both
     `logdive`. The crate *path* is `crates/cli/`. Never call it `cli`.
 
-13. **New test/bench deps go in `[dev-dependencies]`, not `[dependencies]`.**
-    `criterion`, `tempfile`, and `proptest` must never appear in the release
-    dependency graph. `crates/cli/Cargo.toml` currently has a bug where
-    `criterion` and `tempfile` are in `[dependencies]` — do not replicate this
-    pattern; fix it when touching that file.
+13. **Test and bench deps go in `[dev-dependencies]`, not `[dependencies]`.**
+    `criterion`, `tempfile`, and `proptest` are in `[dev-dependencies]` in
+    `crates/cli/Cargo.toml` (fixed in v0.3.0). Do not revert — these must never
+    appear in the release dependency graph.
 
 14. **Keep GitHub Actions action versions consistent across all workflow files.**
-    All three workflows (`ci.yml`, `docker.yml`, `release.yml`, `audit.yml`)
-    must pin the same version of `actions/checkout`. As of v0.2.1 the correct
-    version is `@v4`; `docker.yml` has a bug using `@v6` (non-existent).
+    All four workflows (`ci.yml`, `docker.yml`, `release.yml`, `audit.yml`)
+    pin `actions/checkout@v4` (fixed in v0.3.0). Do not introduce a different
+    version without updating all four files simultaneously.
 
 15. **tower-http version must be kept consistent with axum version.** These
-    crates are tightly coupled. `tower-http` is declared directly in
-    `crates/api/Cargo.toml` (not inherited from workspace). When bumping axum,
-    always check tower-http compatibility and update both together.
+    crates share `tower` trait objects and `http` types. `tower-http` is declared
+    directly in `crates/api/Cargo.toml` (not inherited from workspace). When
+    bumping axum, always check tower-http compatibility and update both together.
 
 16. **Do not break the dedup invariant.** `raw_hash UNIQUE` + `INSERT OR IGNORE`
     is the deduplication contract. Any change to how `raw` is computed or stored
@@ -93,3 +92,13 @@ rules 13+ are implied by what was found during the v0.2.1 exploration.
     validated through two layers (`validate_field_name` in parser +
     `is_safe_json_path_segment` in executor). Never interpolate user input
     into SQL text.
+
+21. **`execute()` and `execute_at()` take `QueryOptions`, not bare `Option<usize>`.**
+    Introduced in v0.3.0. Pass `QueryOptions { limit, offset: None }` when you
+    only need a limit. Adding new pagination-style options goes into `QueryOptions`,
+    not as new function parameters.
+
+22. **`idx_level_norm` is idempotent — it runs on every `Indexer::open()`.**
+    `CREATE INDEX IF NOT EXISTS idx_level_norm ON log_entries(lower(level))` is
+    in `init_schema`. This is intentional: existing databases pick it up on the
+    next open without migration. Do not move it to a migration path.

@@ -5,18 +5,18 @@
 ```
 main                         ← production; only receives merge commits from release branches
 release/vX.Y.Z               ← integration branch per version series; squash-merges land here
-feat/vX.Y.Z/<slug>           ← feature milestone branch, e.g. feat/v0.3.0/paren-queries
-chore/vX.Y.Z/<slug>          ← non-feature milestone branch, e.g. chore/v0.3.0/ci-hardening
-fix/vX.Y.Z/<slug>            ← bug fix branch (inferred from commit history)
+feat/vX.Y.Z/<slug>           ← feature milestone branch, e.g. feat/v0.4.0/yaml-output
+chore/vX.Y.Z/<slug>          ← non-feature milestone branch, e.g. chore/v0.4.0/bench-suite
+fix/vX.Y.Z/<slug>            ← bug fix branch
 ```
 
 **Flow for a milestone:**
 1. `git checkout main && git pull`
-2. `git checkout -b feat/v0.3.0/<slug>`
+2. `git checkout -b feat/v0.4.0/<slug>`
 3. Implement, commit (one concern per commit)
-4. Open PR targeting `release/v0.3.0`
+4. Open PR targeting `release/v0.4.0`
 5. Squash-merge
-6. After all milestones: open PR `release/v0.3.0` → `main` (merge commit, not squash)
+6. After all milestones: open PR `release/v0.4.0` → `main` (merge commit, not squash)
 
 ## Commit format
 
@@ -37,6 +37,12 @@ or `feat(vX.Y.Z): <slug> — <description>`.
 
 Examples from git log:
 ```
+feat(v0.3.0): paren-queries — Clause::Group in AST, parser, executor
+feat(v0.3.0): cli-query-flags — --output rename, --offset, QueryOptions
+feat(v0.3.0): api-pagination — ?offset= param on GET /query
+feat(v0.3.0): generated-columns — case-insensitive level via expression index
+chore(v0.3.0): distroless — swap runtime image, --health-check flag
+chore(v0.3.0): bump version to 0.3.0, update CHANGELOG
 chore(v0.2.1): H1–H5 — security tests, functional tests, supply-chain hardening, docs, release (#9)
 release: logdive v0.2.0 (#8)
 ```
