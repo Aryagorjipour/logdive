@@ -308,9 +308,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
             raw_hash    TEXT NOT NULL UNIQUE,
             ingested_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
-        CREATE INDEX IF NOT EXISTS idx_level     ON log_entries(level);
-        CREATE INDEX IF NOT EXISTS idx_tag       ON log_entries(tag);
-        CREATE INDEX IF NOT EXISTS idx_timestamp ON log_entries(timestamp);",
+        CREATE INDEX IF NOT EXISTS idx_level      ON log_entries(level);
+        CREATE INDEX IF NOT EXISTS idx_tag        ON log_entries(tag);
+        CREATE INDEX IF NOT EXISTS idx_timestamp  ON log_entries(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_level_norm ON log_entries(lower(level));",
     )?;
     Ok(())
 }
@@ -400,12 +401,13 @@ mod tests {
             .connection()
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master \
-                 WHERE type='index' AND name IN ('idx_level','idx_tag','idx_timestamp')",
+                 WHERE type='index' AND name IN \
+                 ('idx_level','idx_tag','idx_timestamp','idx_level_norm')",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(index_count, 3);
+        assert_eq!(index_count, 4);
     }
 
     #[test]

@@ -201,15 +201,31 @@ fn translate_and_group(group: &AndGroup, now: DateTime<Utc>) -> Result<(String, 
 fn translate_clause(clause: &Clause, now: DateTime<Utc>) -> Result<(String, Vec<Bind>)> {
     match clause {
         Clause::Compare { field, op, value } => {
-            let column_expr = column_for_field(field)?;
+            // Route `level` through lower() so queries hit the idx_level_norm
+            // expression index and match case-insensitively (ERROR == error).
+            let (column_expr, bind) = if field == "level" {
+                let lowered = match value {
+                    QueryValue::String(s) => SqlValue::Text(s.to_lowercase()),
+                    other => value_to_bind(other),
+                };
+                ("lower(level)".to_string(), lowered)
+            } else {
+                (column_for_field(field)?, value_to_bind(value))
+            };
             let sql = format!("{column_expr} {op} ?");
-            Ok((sql, vec![value_to_bind(value)]))
+            Ok((sql, vec![bind]))
         }
         Clause::Contains { field, value } => {
-            let column_expr = column_for_field(field)?;
             // Escape SQL LIKE metacharacters (%, _, \) so a user searching
             // for a literal '%' doesn't accidentally wildcard the world.
-            let escaped = escape_like(value);
+            // For `level`, lowercase the pattern so it matches the lower()
+            // column expression used in the index.
+            let (column_expr, normalised_value) = if field == "level" {
+                ("lower(level)".to_string(), value.to_lowercase())
+            } else {
+                (column_for_field(field)?, value.clone())
+            };
+            let escaped = escape_like(&normalised_value);
             let pattern = format!("%{escaped}%");
             let sql = format!("{column_expr} LIKE ? ESCAPE '\\'");
             Ok((sql, vec![SqlValue::Text(pattern)]))
@@ -458,9 +474,9 @@ mod tests {
     fn compare_on_known_field_binds_value_not_interpolates() {
         let ast = parse("level=error").unwrap();
         let (sql, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
-        // Always-parenthesized invariant: even single-clause queries are
-        // wrapped in parens.
-        assert!(sql.contains("WHERE (level = ?)"));
+        // level queries route through lower() for case-insensitive matching.
+        // Always-parenthesized invariant: even single-clause queries are wrapped.
+        assert!(sql.contains("WHERE (lower(level) = ?)"));
         assert!(!sql.contains("error"));
         assert_eq!(binds.len(), 1);
         match &binds[0] {
@@ -542,13 +558,13 @@ mod tests {
     fn and_chain_joins_with_and_inside_a_single_group() {
         let ast = parse("level=error AND service=payments").unwrap();
         let (sql, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
-        assert!(sql.contains("level = ?"));
+        assert!(sql.contains("lower(level) = ?"));
         assert!(sql.contains("json_extract(fields, '$.service') = ?"));
         // AND inside a single parenthesized group, no OR.
         assert!(sql.contains(" AND "));
         assert!(!sql.contains(" OR "));
         // Always-parenthesized invariant.
-        assert!(sql.contains("WHERE (level = ? AND json_extract(fields, '$.service') = ?)"));
+        assert!(sql.contains("WHERE (lower(level) = ? AND json_extract(fields, '$.service') = ?)"));
         assert_eq!(binds.len(), 2);
         match (&binds[0], &binds[1]) {
             (SqlValue::Text(a), SqlValue::Text(b)) => {
@@ -657,7 +673,7 @@ mod tests {
         let ast = parse("level=error OR level=warn").unwrap();
         let (sql, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         // Two parenthesized AND-groups joined by ` OR `.
-        assert!(sql.contains("WHERE (level = ?) OR (level = ?)"));
+        assert!(sql.contains("WHERE (lower(level) = ?) OR (lower(level) = ?)"));
         // Bind order matches clause order across the OR boundary.
         match (&binds[0], &binds[1]) {
             (SqlValue::Text(a), SqlValue::Text(b)) => {
@@ -676,7 +692,7 @@ mod tests {
         assert_eq!(sql.matches(" OR ").count(), 2);
         // All three values appear bound (we rely on the matches above
         // for the count; spot-check shape here).
-        assert!(sql.contains("(level = ?) OR (level = ?) OR (level = ?)"));
+        assert!(sql.contains("(lower(level) = ?) OR (lower(level) = ?) OR (lower(level) = ?)"));
     }
 
     #[test]
@@ -685,7 +701,8 @@ mod tests {
         let ast = parse("level=error AND service=payments OR level=warn").unwrap();
         let (sql, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         assert!(sql.contains(
-            "WHERE (level = ? AND json_extract(fields, '$.service') = ?) OR (level = ?)"
+            "WHERE (lower(level) = ? AND json_extract(fields, '$.service') = ?) \
+             OR (lower(level) = ?)"
         ));
         // Bind order: error, payments, warn — preserved across OR.
         assert_eq!(binds.len(), 3);
@@ -773,11 +790,11 @@ mod tests {
         let (plain_sql, plain_binds) =
             build_sql(&plain_ast, QueryOptions::default(), Utc::now()).unwrap();
         assert!(
-            paren_sql.contains("WHERE ((level = ?))"),
+            paren_sql.contains("WHERE ((lower(level) = ?))"),
             "paren form: {paren_sql}"
         );
         assert!(
-            plain_sql.contains("WHERE (level = ?)"),
+            plain_sql.contains("WHERE (lower(level) = ?)"),
             "plain form: {plain_sql}"
         );
         assert_eq!(paren_binds, plain_binds);
@@ -786,11 +803,12 @@ mod tests {
     #[test]
     fn paren_or_inside_and_emits_nested_parens() {
         // `(level=error OR level=warn) AND service=payments`
-        // Expected WHERE shape: `(((level = ?) OR (level = ?)) AND json_extract(fields, '$.service') = ?)`
+        // Expected WHERE shape:
+        // `(((lower(level) = ?) OR (lower(level) = ?)) AND json_extract(fields, '$.service') = ?)`
         let ast = parse("(level=error OR level=warn) AND service=payments").unwrap();
         let (sql, binds) = build_sql(&ast, QueryOptions::default(), Utc::now()).unwrap();
         // The inner OR group must be parenthesized inside the outer AND group.
-        assert!(sql.contains("((level = ?) OR (level = ?))"));
+        assert!(sql.contains("((lower(level) = ?) OR (lower(level) = ?))"));
         assert!(sql.contains("json_extract(fields, '$.service') = ?"));
         assert_eq!(binds.len(), 3);
         match (&binds[0], &binds[1], &binds[2]) {
@@ -921,6 +939,31 @@ mod tests {
         let idx = fixture();
         let rows = run_query(idx.connection(), "level=nonsense");
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn round_trip_level_compare_is_case_insensitive() {
+        // Fixture stores "error" (lowercase). Query with "ERROR" must still match.
+        let idx = fixture();
+        let rows_upper = run_query(idx.connection(), "level=ERROR");
+        let rows_mixed = run_query(idx.connection(), "level=Error");
+        let rows_lower = run_query(idx.connection(), "level=error");
+        assert_eq!(rows_upper.len(), rows_lower.len());
+        assert_eq!(rows_mixed.len(), rows_lower.len());
+        assert!(
+            rows_lower
+                .iter()
+                .all(|e| e.level.as_deref() == Some("error"))
+        );
+    }
+
+    #[test]
+    fn round_trip_level_contains_is_case_insensitive() {
+        // "ERR" must match rows whose stored level is "error".
+        let idx = fixture();
+        let rows = run_query(idx.connection(), r#"level contains "ERR""#);
+        assert!(!rows.is_empty());
+        assert!(rows.iter().all(|e| e.level.as_deref() == Some("error")));
     }
 
     #[test]
