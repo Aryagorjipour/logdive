@@ -14,6 +14,8 @@ these can break compilation with type-mismatch errors on `Service` impls or
 required matching version. Note that `tower-http` is declared directly in
 `crates/api/Cargo.toml` (not inherited from workspace), so a workspace-level
 axum bump must be accompanied by a manual tower-http bump in api's Cargo.toml.
+As of v0.3.0: `axum = "0.7"` + `tower-http = "0.6"` + `tower = "0.5"`.
+(tower was bumped from 0.4 → 0.5 in v0.3.0 to unify with axum's transitive dep.)
 
 ---
 
