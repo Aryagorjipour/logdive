@@ -1,0 +1,42 @@
+---
+export interface Props {
+  id: string;
+  maxWidth?: string;
+}
+const { id, maxWidth } = Astro.props;
+---
+<div class="code-block" style={maxWidth ? `max-width: ${maxWidth}` : undefined}>
+  <button class="copy-btn" type="button" data-copy-target={`#${id}`}>Copy</button>
+  <pre id={id}><slot /></pre>
+</div>
+
+<script>
+  document.querySelectorAll<HTMLButtonElement>('.copy-btn[data-copy-target]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const selector = btn.getAttribute('data-copy-target')!;
+      const node = document.querySelector<HTMLElement>(selector);
+      const text = node?.innerText ?? '';
+      if (!text) return;
+
+      const write = navigator.clipboard?.writeText(text);
+      if (write) {
+        write.then(() => flash(btn));
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); } catch {}
+        document.body.removeChild(ta);
+        flash(btn);
+      }
+    });
+  });
+
+  function flash(btn: HTMLButtonElement) {
+    const orig = btn.textContent!;
+    btn.classList.add('is-copied');
+    btn.textContent = 'COPIED';
+    setTimeout(() => { btn.classList.remove('is-copied'); btn.textContent = orig; }, 1400);
+  }
+</script>

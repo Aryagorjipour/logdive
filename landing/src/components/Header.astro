@@ -1,0 +1,54 @@
+---
+export interface Props { activeNav?: 'docs' | 'about'; }
+const { activeNav } = Astro.props;
+const base = import.meta.env.BASE_URL;
+---
+<header class="site-header">
+  <div class="wrap">
+    <a class="logo" href={`${base}/`} aria-label="logdive home">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <line x1="3" y1="8"  x2="21" y2="8"  stroke="currentColor" stroke-width="1.5" opacity="0.4"/>
+        <line x1="3" y1="14" x2="21" y2="14" stroke="currentColor" stroke-width="1.5" opacity="0.4"/>
+        <line x1="3" y1="20" x2="21" y2="20" stroke="currentColor" stroke-width="1.5" opacity="0.4"/>
+        <path d="M20 4 Q 14 6 11 14 T 4 22" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+        <circle cx="4" cy="22" r="1.5" fill="var(--accent)"/>
+      </svg>
+      <span class="wordmark">logdive</span>
+    </a>
+    <nav class="nav" id="primary-nav" aria-label="Primary">
+      <a href={`${base}/docs`} class={activeNav === 'docs' ? 'is-active' : ''}>Docs</a>
+      <a href={`${base}/about`} class={activeNav === 'about' ? 'is-active' : ''}>About</a>
+      <a href="https://github.com/Aryagorjipour/logdive" rel="noopener">GitHub</a>
+    </nav>
+    <button class="icon-btn theme-toggle" type="button" aria-label="Toggle theme">
+      <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+    </button>
+    <button class="icon-btn mobile-toggle" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="primary-nav">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
+    </button>
+  </div>
+</header>
+
+<script>
+  const toggle = document.querySelector('.theme-toggle')!;
+  const mobileToggle = document.querySelector('.mobile-toggle')!;
+  const nav = document.querySelector('#primary-nav')!;
+
+  function currentTheme(): string {
+    const t = document.documentElement.getAttribute('data-theme');
+    if (t === 'light' || t === 'dark') return t;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+
+  toggle.addEventListener('click', () => {
+    const next = currentTheme() === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem('logdive-theme', next); } catch {}
+  });
+
+  mobileToggle.addEventListener('click', () => {
+    const open = nav.classList.toggle('is-open');
+    mobileToggle.setAttribute('aria-expanded', String(open));
+  });
+</script>

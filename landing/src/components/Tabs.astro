@@ -1,0 +1,39 @@
+---
+export interface Tab { id: string; label: string; }
+export interface Props { tabs: Tab[]; }
+const { tabs } = Astro.props;
+---
+<div data-tabs>
+  <div class="tabs" role="tablist">
+    {tabs.map((tab, i) => (
+      <button
+        class={`tab-btn${i === 0 ? ' is-active' : ''}`}
+        type="button"
+        data-tab={tab.id}
+        role="tab"
+        aria-selected={i === 0 ? 'true' : 'false'}
+        aria-controls={`panel-${tab.id}`}
+      >
+        {tab.label}
+      </button>
+    ))}
+  </div>
+  <slot />
+</div>
+
+<script>
+  document.querySelectorAll<HTMLElement>('[data-tabs]').forEach(group => {
+    const buttons = group.querySelectorAll<HTMLButtonElement>('.tab-btn');
+    const panels = group.querySelectorAll<HTMLElement>('.tab-panel');
+    buttons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-tab')!;
+        buttons.forEach(b => {
+          b.classList.toggle('is-active', b === btn);
+          b.setAttribute('aria-selected', String(b === btn));
+        });
+        panels.forEach(p => p.classList.toggle('is-active', p.getAttribute('data-panel') === id));
+      });
+    });
+  });
+</script>

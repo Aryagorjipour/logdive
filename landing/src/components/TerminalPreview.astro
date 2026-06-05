@@ -1,0 +1,24 @@
+---
+---
+<div class="terminal" role="figure" aria-label="Example logdive queries">
+  <div class="terminal-head">
+    <span class="terminal-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+    <span>~/services/payments  —  logdive</span>
+  </div>
+  <div class="terminal-body">
+    <div class="cmd">
+      <span class="prompt">$</span>logdive query <span class="str">'level=error AND service=payments last 2h'</span>
+    </div>
+    <div class="note">All errors from the payments service in the last 2 hours.</div>
+
+    <div class="cmd">
+      <span class="prompt">$</span>logdive query <span class="str">'level=error OR level=warn'</span> --format json
+    </div>
+    <div class="note">Pipe results downstream — output is line-delimited JSON.</div>
+
+    <div class="cmd">
+      <span class="prompt">$</span>logdive query <span class="str">'message contains <span class="accent-tok">"timeout"</span> last 24h'</span>
+    </div>
+    <div class="note">Substring match on the message body. Highlighted token is the literal you're searching for.</div>
+  </div>
+</div>
