@@ -8,9 +8,6 @@
 *.db-wal
 *.db-shm
 
-# AI context — never commit
-.context/
-
 # Editor / OS cruft
 .DS_Store
 .idea/
