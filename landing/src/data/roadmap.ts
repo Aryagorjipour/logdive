@@ -1,6 +1,6 @@
-export const CURRENT_VERSION = '0.2.1';
-export const IN_PROGRESS_VERSION = '0.3.0';
-export const ROADMAP_UPDATED = '2026-06-01';
+export const CURRENT_VERSION = '0.3.0';
+export const IN_PROGRESS_VERSION = '0.4.0';
+export const ROADMAP_UPDATED = '2026-06-05';
 
 export type ItemKind = 'feature' | 'perf' | 'infra' | 'docs';
 
@@ -21,41 +21,33 @@ export interface ShippedRelease {
 
 export const roadmapNow: RoadmapItem[] = [
   {
-    title: 'Parenthesised query expressions',
-    kind: 'feature',
-    issue: 51,
-    description: 'Grouping with ( ) so NOT and OR compose cleanly without precedence surprises.',
+    title: 'Large-corpus benchmark suite',
+    kind: 'perf',
+    versionTarget: '0.4.0',
+    description: 'Extend criterion benchmarks to 500k-row datasets; profile OR fanout, CONTAINS scans, and json_extract() call overhead.',
   },
   {
-    title: 'Distroless Docker image',
-    kind: 'infra',
-    description: 'Replace debian:bookworm-slim runtime with distroless/cc for a smaller attack surface.',
-  },
-  {
-    title: 'Generated columns',
-    kind: 'feature',
-    description: 'Index derived fields at ingest time to accelerate repeated queries on computed values.',
+    title: 'Query latency improvements',
+    kind: 'perf',
+    versionTarget: '0.4.0',
+    description: 'Target sub-10ms for 25%-match queries at 500k rows on indexed fields. Profile and reduce allocations in the executor hot path.',
   },
 ];
 
 export const roadmapNext: RoadmapItem[] = [
   {
-    title: 'Windows support for --follow mode',
-    kind: 'infra',
-    versionTarget: '0.4.0',
-    description: 'Rotation and truncation detection on NTFS using ReadDirectoryChangesW.',
-  },
-  {
     title: 'Structured output formats: yaml, csv',
     kind: 'feature',
-    issue: 39,
-    versionTarget: '0.3.0',
+    description: 'Add --output yaml and --output csv to logdive query for pipeline-friendly output.',
+  },
+  {
+    title: 'Windows support for --follow mode',
+    kind: 'infra',
+    description: 'Rotation and truncation detection on NTFS using ReadDirectoryChangesW.',
   },
   {
     title: 'Configurable retention by source',
     kind: 'feature',
-    issue: 44,
-    versionTarget: '0.4.0',
     description: 'Let prune --older-than vary per source tag instead of one global cutoff.',
   },
 ];
@@ -70,13 +62,11 @@ export const roadmapLater: RoadmapItem[] = [
   {
     title: 'Multi-file ingest with glob patterns',
     kind: 'feature',
-    issue: 33,
     note: 'considering',
   },
   {
     title: 'Aggregations: count, distinct, group-by',
     kind: 'feature',
-    issue: 21,
     note: 'considering',
   },
   {
@@ -88,6 +78,17 @@ export const roadmapLater: RoadmapItem[] = [
 ];
 
 export const shipped: ShippedRelease[] = [
+  {
+    version: '0.3.0',
+    date: '2026-06-05',
+    highlights: [
+      'Parenthesised query groups: (level=error OR level=warn) AND service=payments.',
+      'CLI pagination: --offset N on logdive query; HTTP offset= parameter on GET /query.',
+      'Case-insensitive level queries: level=ERROR matches level=error via expression index.',
+      'Distroless Docker runtime (gcr.io/distroless/cc-debian12:nonroot); --health-check flag replaces curl.',
+      'Breaking: logdive query --format renamed to --output; execute() now takes QueryOptions { limit, offset }.',
+    ],
+  },
   {
     version: '0.2.1',
     date: '2026-06-01',

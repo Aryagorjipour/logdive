@@ -21,7 +21,7 @@ logdive ingest --file ./logs/app.log --follow
 
 # Query with AND and OR.
 logdive query 'level=error AND service=payments last 2h'
-logdive query 'level=error OR level=warn' --format json
+logdive query 'level=error OR level=warn' --output json
 
 # Prune old entries to keep the index lean.
 logdive prune --older-than 30d
@@ -35,7 +35,7 @@ curl 'http://127.0.0.1:4000/query?q=level%3Derror&limit=100'
 curl 'http://127.0.0.1:4000/version'
 ```
 
-> **Status: v0.2.1.** Core feature set complete and tested. Adds multi-format ingestion, follow mode, OR queries, pruning, a Docker image, and a versioned HTTP API. Includes a full security and functional test suite, supply-chain hardening (`cargo-deny`, SBOM, daily audit CI), and allocation improvements in the HTTP query path. See [v1 non-goals](#v1-non-goals) for what is explicitly out of scope.
+> **Status: v0.3.0.** Adds parenthesised query groups, CLI pagination (`--offset`), case-insensitive level queries, and a distroless Docker runtime. Breaking: `logdive query --format` renamed to `--output`; `execute()` now takes `QueryOptions { limit, offset }`. See [v1 non-goals](#v1-non-goals) for what is explicitly out of scope.
 
 ---
 
@@ -134,7 +134,7 @@ logdive --db /tmp/demo.db query 'level=error OR level=warn AND service=payments'
 logdive --db /tmp/demo.db query 'tag=nginx AND request_time > 1.0'
 
 # Get structured output for further processing.
-logdive --db /tmp/demo.db query 'service=payments' --format json | jq
+logdive --db /tmp/demo.db query 'service=payments' --output json | jq
 
 # Prune entries older than 7 days.
 logdive --db /tmp/demo.db prune --older-than 7d
@@ -195,14 +195,16 @@ Runs a query against the index and renders matching entries.
 logdive query 'level=error'
 logdive query 'level=error AND service=payments last 24h'
 logdive query 'level=error OR level=warn'
-logdive query 'message contains "timeout"' --format json
+logdive query '(level=error OR level=warn) AND service=payments'
+logdive query 'message contains "timeout"' --output json
 logdive query 'since 2026-01-01' --limit 0
 ```
 
 Flags:
 
-- `--format pretty|json` — Output format. Default `pretty` (colored, human-readable). `json` is newline-delimited, pipe-friendly for `jq`.
+- `--output pretty|json` — Output format. Default `pretty` (colored, human-readable). `json` is newline-delimited, pipe-friendly for `jq`.
 - `--limit <N>` — Maximum results to return. Default `1000`. Use `0` for unlimited.
+- `--offset <N>` — Skip the first N results. Use with `--limit` for page navigation. Default `0`.
 - `--db <PATH>` — Database path override. Also settable via `$LOGDIVE_DB`.
 
 Pretty output honors `NO_COLOR` and auto-strips ANSI when piped. JSON output is identical in shape to the HTTP API's `/query` response.
@@ -262,7 +264,7 @@ Official images for `linux/amd64` and `linux/arm64` are published to GHCR on eve
 ```bash
 docker pull ghcr.io/aryagorjipour/logdive:latest
 # or pin to a specific version:
-docker pull ghcr.io/aryagorjipour/logdive:0.2.1
+docker pull ghcr.io/aryagorjipour/logdive:0.3.0
 ```
 
 ### Start the API server
@@ -316,7 +318,7 @@ docker run -d \
 
 ### Health check
 
-The image declares a Docker HEALTHCHECK on `GET /version`. No database access is involved — the endpoint returns compile-time constants and is always available once the process is up.
+The image declares a Docker HEALTHCHECK using the `--health-check` flag on `logdive-api`. This opens a TCP connection to the server's own port via stdlib `TcpStream` — no curl, no shell, no HTTP client required. Works correctly in the distroless runtime image.
 
 ```bash
 docker inspect --format='{{.State.Health.Status}}' logdive
@@ -357,6 +359,7 @@ Query parameters:
 
 - `q` (required) — Query expression. URL-encoded.
 - `limit` (optional) — Maximum results. Default 1000. `0` means unlimited.
+- `offset` (optional) — Skip the first N results. Default 0. Use with `limit` for pagination.
 
 Response:
 
@@ -367,6 +370,7 @@ Response:
 ```bash
 curl 'http://127.0.0.1:4000/query?q=level%3Derror&limit=50'
 curl 'http://127.0.0.1:4000/query?q=level%3Derror+OR+level%3Dwarn' | jq -s .
+curl 'http://127.0.0.1:4000/query?q=level%3Derror&limit=20&offset=40'
 ```
 
 #### `GET /stats`
@@ -404,7 +408,7 @@ Response shape:
 
 ```json
 {
-  "version": "0.2.1",
+  "version": "0.3.0",
   "formats": ["json", "logfmt", "plain"],
   "capabilities": ["query", "stats", "version"]
 }
@@ -415,7 +419,7 @@ Always returns 200 OK. Never touches the database.
 ### Security
 
 - **Read-only**: The API opens the database with `SQLITE_OPEN_READ_ONLY`. Writes are rejected at the SQLite level.
-- **No authentication in v0.2**: The server assumes the network layer handles access control. Do not expose it publicly without a reverse proxy providing authentication.
+- **No authentication**: The server assumes the network layer handles access control. Do not expose it publicly without a reverse proxy providing authentication.
 - **Auto-creates empty index on first run**: If the configured database does not exist, the server creates it with an initialized schema and starts cleanly, returning zero results until logs are ingested via the CLI. Genuinely bad paths (wrong directory, permission denied) still cause a startup failure with a clear error message.
 - **CORS disabled by default**: Cross-origin requests are blocked unless `--cors-origins` is explicitly configured.
 - **Graceful shutdown**: Ctrl-C and SIGTERM (Unix) trigger a clean shutdown.
@@ -429,10 +433,12 @@ logdive queries are a small expression language supporting `AND` within groups a
 ### Grammar
 
 ```
-query    := and_expr (OR and_expr)*
+query    := or_expr [ TIME_RANGE ]
+or_expr  := and_expr (OR and_expr)*
 and_expr := clause (AND clause)*
 clause   := field OP value
            | field CONTAINS string
+           | "(" or_expr ")"
            | TIME_RANGE
 field    := [a-zA-Z_][a-zA-Z0-9_.]*
 OP       := "=" | "!=" | ">" | "<"
@@ -485,7 +491,7 @@ Timestamps in the index are compared as text. This is correct for ISO-8601-shape
 
 ### Combining clauses
 
-Clauses are joined with `AND` (case-insensitive). Since v0.2.0, groups of AND-clauses can be separated with `OR` to match entries satisfying any group. `AND` binds more tightly than `OR`. Parenthesised expressions are not yet supported — see [v1 non-goals](#v1-non-goals).
+Clauses are joined with `AND` (case-insensitive). Groups of AND-clauses can be separated with `OR`. `AND` binds more tightly than `OR`. Parentheses are supported for explicit grouping.
 
 ```bash
 # AND only.
@@ -497,6 +503,9 @@ logdive query 'level=error OR level=warn'
 # AND within each OR branch.
 logdive query 'level=error AND service=payments OR level=warn AND tag=worker'
 # Equivalent to: (level=error AND service=payments) OR (level=warn AND tag=worker)
+
+# Parentheses change precedence explicitly.
+logdive query '(level=error OR level=warn) AND service=payments'
 ```
 
 ### Quoting
@@ -539,6 +548,9 @@ logdive query 'message!="health check ok"'
 
 # Errors from payments OR any warn from worker, last hour.
 logdive query 'level=error AND service=payments last 1h OR level=warn AND tag=worker last 1h'
+
+# Parenthesised OR, then AND narrows further.
+logdive query '(level=error OR level=warn) AND service=payments last 2h'
 ```
 
 ---
@@ -610,7 +622,7 @@ Numbers from criterion benchmarks — run `cargo bench` for your own baseline.
 
 Release-profile binary sizes:
 
-- `logdive`: 3.7 MB
+- `logdive`: 3.8 MB
 - `logdive-api`: 4.1 MB
 
 Targets: both binaries under 10 MB. Run `scripts/check-binary-size.sh` to verify.
@@ -667,10 +679,10 @@ Bug reports and pull requests welcome. Before submitting a PR, please ensure:
 
 The following are **intentionally** out of scope and may or may not land in future versions:
 
-- **Parenthesised query expressions** — `(level=error OR level=warn) AND service=payments` — AND + OR without grouping shipped in v0.2; full parenthesisation is deferred to v0.3.
 - **Authentication on the HTTP API** — the API trusts its network layer.
 - **Ingestion over HTTP** — the API is read-only. Ingestion goes through the CLI.
-- **Multi-machine or networked indexes** — single-host only.
+- **Multi-machine or networked indexes** — single-host only. Use Loki if you have a fleet.
+- **Real-time analytics or aggregation at scale** — logdive is a query tool, not a streaming analytics engine. Use Loki or ClickHouse for millions of rows with group-by and aggregations.
 - **Log shipping, agents, or daemons** — logdive is a tool, not a service.
 - **A browser UI** — curl and the CLI are the intended interfaces. Third parties can build UIs against the HTTP API.
 

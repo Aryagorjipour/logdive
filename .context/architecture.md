@@ -46,7 +46,7 @@ crates/
       error.rs                 AppError (maps LogdiveError → HTTP status codes)
       state.rs                 AppState { db_path }, with_connection()
     tests/
-      integration.rs           18 end-to-end HTTP tests via tower::ServiceExt::oneshot
+      integration.rs           21 end-to-end HTTP tests via tower::ServiceExt::oneshot
 ```
 
 ## Locked decisions
@@ -80,7 +80,7 @@ crates/
   duplicates are counted and silently dropped
 - Why: re-ingesting a file (rotation recovery, repeated --follow startup)
   produces zero duplicates; no separate dedup pass needed
-- What breaks if changed: dedup guarantee; 386 tests assert on InsertStats
+- What breaks if changed: dedup guarantee; 417 tests assert on InsertStats
 
 **1000 rows per insert transaction (BATCH_SIZE)**
 - What: `ingest_reader` batches parsed entries in chunks of 1000 before each
@@ -110,11 +110,13 @@ crates/
 - Why: Windows rotation detection requires `ReadDirectoryChangesW`, deferred
 - What breaks if changed: cross-platform compilation
 
-**Query language v0.2 — AND + OR, no parens**
-- What: grammar supports `or_expr := and_expr (OR and_expr)*`; parentheses
-  are rejected by the tokenizer as `unexpected character`
-- Why: simplicity; parens planned for v0.3.0
-- What breaks if changed: all 60+ query tests; public `QueryNode` enum shape
+**Query language v0.3 — AND + OR + parenthesised groups**
+- What: grammar supports `or_expr := and_expr (OR and_expr)*`; clauses can now
+  be `Clause::Group(Box<QueryNode>)` — a parenthesised sub-expression; executor
+  wraps groups in a nested SQL sub-expression
+- Why: shipped in v0.3.0; hand-written recursive descent parser extended with
+  `parse_primary()` that recognises `(` and recurses into `parse_or_expr()`
+- What breaks if changed: all 60+ query tests; public `QueryNode`/`Clause` enum shapes
 
 ## Schema
 
@@ -132,9 +134,10 @@ CREATE TABLE IF NOT EXISTS log_entries (
     raw_hash    TEXT NOT NULL UNIQUE,
     ingested_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX IF NOT EXISTS idx_level     ON log_entries(level);
-CREATE INDEX IF NOT EXISTS idx_tag       ON log_entries(tag);
-CREATE INDEX IF NOT EXISTS idx_timestamp ON log_entries(timestamp);
+CREATE INDEX IF NOT EXISTS idx_level      ON log_entries(level);
+CREATE INDEX IF NOT EXISTS idx_level_norm ON log_entries(lower(level));
+CREATE INDEX IF NOT EXISTS idx_tag        ON log_entries(tag);
+CREATE INDEX IF NOT EXISTS idx_timestamp  ON log_entries(timestamp);
 ```
 
 Notes:
@@ -151,11 +154,12 @@ Notes:
 From `crates/core/src/query.rs` comments and implementation:
 
 ```
-query     := or_expr
+query     := or_expr [ TIME_RANGE ]
 or_expr   := and_expr (OR and_expr)*
 and_expr  := clause (AND clause)*
 clause    := field OP value
            | field CONTAINS string
+           | "(" or_expr ")"
            | TIME_RANGE
 field     := [a-zA-Z_][a-zA-Z0-9_.]*
 OP        := "=" | "!=" | ">" | "<"
@@ -165,7 +169,7 @@ TIME_RANGE := "last" duration | "since" datetime
 duration  := number ("m" | "h" | "d")
 ```
 
-`AND` binds tighter than `OR`. No parentheses. All keywords case-insensitive.
+`AND` binds tighter than `OR`. Parentheses supported since v0.3.0. All keywords case-insensitive.
 
 Tokenizer is more permissive than the grammar: allows `-` and `:` inside idents
 so bare-word datetime literals (`2024-01-01T10:00:00Z`) and hyphenated values

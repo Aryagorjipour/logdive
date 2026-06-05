@@ -8,8 +8,8 @@
 - **crates.io**: https://crates.io/crates/logdive (CLI), https://crates.io/crates/logdive-api, https://crates.io/crates/logdive-core
 - **Docs**: https://docs.rs/logdive-core
 - **Docker registry**: ghcr.io/aryagorjipour/logdive
-- **Current version**: 0.2.1 (released 2026-06-01)
-- **Next planned**: v0.3.0
+- **Current version**: 0.3.0 (released 2026-06-05)
+- **Next planned**: v0.4.0
 
 ## What it is
 
@@ -61,7 +61,6 @@ Cloudflare, self-hosted, crates.io, GHCR.
 These will not be implemented. Do not propose them without explicit re-opening
 by Arya:
 
-- **Parenthesised query expressions** — deferred to v0.3.0 (not permanent)
 - **Authentication on the HTTP API** — the API trusts its network layer; auth
   belongs in a reverse proxy in front of it
 - **Ingestion over HTTP** — the API is read-only by design; CLI handles writes

@@ -62,6 +62,22 @@ Find slow requests (over 1 second):
 logdive --db /tmp/logdive-examples.db query 'request_time > 1.0'
 ```
 
+Use parentheses to express complex conditions (shipped in v0.3.0):
+
+```bash
+# Errors OR warnings, but only from the payments service.
+logdive --db /tmp/logdive-examples.db query '(level=error OR level=warn) AND service=payments'
+```
+
+Page through results with `--offset`:
+
+```bash
+# First 10 errors.
+logdive --db /tmp/logdive-examples.db query 'level=error' --limit 10
+# Next 10.
+logdive --db /tmp/logdive-examples.db query 'level=error' --limit 10 --offset 10
+```
+
 Find everything from the last hour of the fixture window:
 
 ```bash
@@ -72,7 +88,7 @@ logdive --db /tmp/logdive-examples.db query 'since 2026-04-15T11:00:00Z'
 Pipe structured output into `jq` for further manipulation:
 
 ```bash
-logdive --db /tmp/logdive-examples.db query 'level=error' --format json | jq '{when: .timestamp, who: .service, what: .message}'
+logdive --db /tmp/logdive-examples.db query 'level=error' --output json | jq '{when: .timestamp, who: .service, what: .message}'
 ```
 
 ### 4. Spin up the HTTP API
