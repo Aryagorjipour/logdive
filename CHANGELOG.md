@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-24
+
+### Fixed
+
+- **Supply-chain: RUSTSEC-2026-0204 / RUSTSEC-2026-0190**
+  - Bumped transitive `crossbeam-epoch` `0.9.18` → `0.9.20` (via criterion →
+    rayon → crossbeam-deque). Fixes invalid pointer dereference in
+    `fmt::Pointer` for `Atomic`/`Shared` when the underlying pointer is
+    invalid ([RUSTSEC-2026-0204](https://rustsec.org/advisories/RUSTSEC-2026-0204)).
+  - Bumped transitive `anyhow` `1.0.102` → `1.0.104` (via wit-bindgen /
+    wasm-metadata build tooling in the lockfile). Clears unsound
+    `Error::downcast_mut` advisory
+    ([RUSTSEC-2026-0190](https://rustsec.org/advisories/RUSTSEC-2026-0190)).
+  - No application source changes; production binaries do not call the
+    affected APIs. `cargo audit` and `cargo deny check` are clean again.
+
 ## [0.3.0] - 2026-06-05
 
 ### Added

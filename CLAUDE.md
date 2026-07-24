@@ -13,8 +13,8 @@ Rust workspace (edition 2024, MSRV 1.85). Ships two binaries:
 
 Library half: `logdive-core` is publishable as a standalone crate.
 
-Current version: **0.3.0** (released 2026-06-05).
-Next milestone: **0.4.0** (yaml/csv output, configurable retention by source, Windows --follow).
+Current version: **0.3.1** (released 2026-07-24).
+Next milestone: **0.4.0** (performance / large-corpus benchmarks / query latency).
 
 ## Commands
 

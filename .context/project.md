@@ -9,7 +9,7 @@
 - **Docs**: https://docs.rs/logdive-core
 - **Docker registry**: ghcr.io/aryagorjipour/logdive
 - **Landing page**: https://aryagorjipour.github.io/logdive/ (GitHub Pages, Astro 5)
-- **Current version**: 0.3.0 (released 2026-06-05)
+- **Current version**: 0.3.1 (released 2026-07-24)
 - **Next planned**: v0.4.0 (performance / benchmarks / speed focus)
 - **Long-term target**: v1.0.0 (stable API + complete docs) → triggers Show HN
 
@@ -72,6 +72,7 @@ scope creep, half-shipped features, or mediocre docs are particularly costly.
 | v0.2.0 | OR queries, logfmt, follow mode, prune, CORS, Docker | shipped 2026-05-15 |
 | v0.2.1 | Security tests, functional tests, supply-chain hardening | shipped 2026-06-01 |
 | v0.3.0 | Parens, pagination, case-insensitive level, distroless | shipped 2026-06-05 |
+| v0.3.1 | Supply-chain patch (RUSTSEC-2026-0204, RUSTSEC-2026-0190) | shipped 2026-07-24 |
 | v0.4.0 | Performance / benchmarks / speed | in planning |
 | v1.0.0 | Stable API + complete docs → Show HN trigger | target ~2027-03-31 |
 

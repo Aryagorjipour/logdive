@@ -41,7 +41,7 @@ curl 'http://127.0.0.1:4000/query?q=level%3Derror&limit=100'
 curl 'http://127.0.0.1:4000/version'
 ```
 
-> **Status: v0.3.0.** Adds parenthesised query groups, CLI pagination (`--offset`), case-insensitive level queries, and a distroless Docker runtime. Breaking: `logdive query --format` renamed to `--output`; `execute()` now takes `QueryOptions { limit, offset }`. See [v1 non-goals](#v1-non-goals) for what is explicitly out of scope.
+> **Status: v0.3.1.** Patch release: clears RUSTSEC-2026-0204 (`crossbeam-epoch`) and RUSTSEC-2026-0190 (`anyhow`) via lockfile bumps. v0.3.0 added parenthesised query groups, CLI pagination (`--offset`), case-insensitive level queries, and a distroless Docker runtime. See [v1 non-goals](#v1-non-goals) for what is explicitly out of scope.
 
 ---
 
@@ -270,7 +270,7 @@ Official images for `linux/amd64` and `linux/arm64` are published to GHCR on eve
 ```bash
 docker pull ghcr.io/aryagorjipour/logdive:latest
 # or pin to a specific version:
-docker pull ghcr.io/aryagorjipour/logdive:0.3.0
+docker pull ghcr.io/aryagorjipour/logdive:0.3.1
 ```
 
 ### Start the API server
@@ -414,7 +414,7 @@ Response shape:
 
 ```json
 {
-  "version": "0.3.0",
+  "version": "0.3.1",
   "formats": ["json", "logfmt", "plain"],
   "capabilities": ["query", "stats", "version"]
 }

@@ -1,6 +1,6 @@
-export const CURRENT_VERSION = '0.3.0';
+export const CURRENT_VERSION = '0.3.1';
 export const IN_PROGRESS_VERSION = '0.4.0';
-export const ROADMAP_UPDATED = '2026-06-05';
+export const ROADMAP_UPDATED = '2026-07-24';
 
 export type ItemKind = 'feature' | 'perf' | 'infra' | 'docs';
 
@@ -78,6 +78,14 @@ export const roadmapLater: RoadmapItem[] = [
 ];
 
 export const shipped: ShippedRelease[] = [
+  {
+    version: '0.3.1',
+    date: '2026-07-24',
+    highlights: [
+      'Supply-chain patch: crossbeam-epoch 0.9.20 (RUSTSEC-2026-0204) and anyhow 1.0.104 (RUSTSEC-2026-0190).',
+      'cargo audit and cargo deny check clean again; no application API changes.',
+    ],
+  },
   {
     version: '0.3.0',
     date: '2026-06-05',
